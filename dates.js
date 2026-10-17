@@ -215,15 +215,23 @@ export function extractDeadlineFromContext(text) {
 
   const lower = text.toLowerCase();
 
-  // 1. Proximity search around keywords
+  // 1. Proximity search around keywords (search following text first)
   for (const kw of keywords) {
     let searchStart = 0;
     while (searchStart < lower.length) {
       const idx = lower.indexOf(kw, searchStart);
       if (idx === -1) break;
 
+      // First check immediately after keyword: "Registration deadline: 2026-04-02"
+      const afterSnippet = text.slice(idx, Math.min(text.length, idx + kw.length + 80));
+      const foundAfter = parseColloquialDate(afterSnippet);
+      if (foundAfter) {
+        return foundAfter;
+      }
+
+      // If not found after, check window around keyword
       const windowStart = Math.max(0, idx - 40);
-      const windowEnd = Math.min(text.length, idx + kw.length + 120);
+      const windowEnd = Math.min(text.length, idx + kw.length + 100);
       const snippet = text.slice(windowStart, windowEnd);
       const found = parseColloquialDate(snippet);
       if (found) {

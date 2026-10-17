@@ -1,8 +1,10 @@
 /**
  * server.js - Express backend for Nudge Copilot
+ * Persistent Anonymous User Identity, Multi-tenant Isolation, and Production Hardening
  */
 import express from 'express';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import * as XLSX from 'xlsx';
@@ -11,6 +13,9 @@ dotenv.config();
 
 import {
   db,
+  createGuestSession,
+  getGuestSessionByToken,
+  touchGuestSession,
   getProfile,
   updateProfile,
   getOpportunities,
@@ -29,21 +34,35 @@ import {
   insertEvent,
   deleteEvent,
   scheduleReminder,
+  cancelRemindersFor,
   insertPushSubscription,
   getConversations,
   getConversation,
   createConversation,
+  renameConversation,
+  deleteConversation,
+  searchConversations,
   updateConversationPending,
   getMessages,
   addMessage,
+  updateMessageActions,
+  getOutreachRecords,
+  getOutreachById,
+  insertOutreach,
+  updateOutreach,
+  markOutreachSent,
+  recordOutreachReply,
+  scheduleOutreachFollowup,
+  deleteOutreach,
+  getOutreachMetrics,
   getFullState,
   resetDatabase,
   seedDatabase
 } from './db.js';
 
-import { processUserInput } from './ai.js';
+import { processUserInput, generateColdEmailDraft } from './ai.js';
 import { todayIST, formatDateIST, daysUntil, countdownText, addDays } from './dates.js';
-import { vapidKeys, startScheduler, sendPushToAll } from './scheduler.js';
+import { vapidKeys, startScheduler, sendPushToGuest, sendPushToAll } from './scheduler.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,40 +70,167 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// Security & Parsing Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+/**
+ * Cookie Parser Helper
+ */
+function parseCookies(cookieHeader) {
+  const list = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    const name = parts[0]?.trim();
+    if (!name) return;
+    const value = parts.slice(1).join('=').trim();
+    try {
+      list[name] = decodeURIComponent(value);
+    } catch {
+      list[name] = value;
+    }
+  });
+  return list;
+}
+
+/**
+ * Middleware: Persistent Cryptographically Random Anonymous Guest Identity
+ */
+app.use((req, res, next) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const token = cookies.nudge_guest;
+  let session = null;
+
+  if (token && typeof token === 'string' && /^[0-9a-fA-F]{64}$/.test(token)) {
+    session = getGuestSessionByToken(token);
+  }
+
+  const now = new Date();
+  if (session && new Date(session.expires_at) > now) {
+    req.guestId = session.guest_id;
+    touchGuestSession(token);
+  } else {
+    // Generate fresh cryptographically secure guest session
+    const guestId = 'g_' + crypto.randomBytes(16).toString('hex');
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(); // 1 year lifetime
+
+    createGuestSession(guestId, sessionToken, expiresAt);
+    req.guestId = guestId;
+
+    const isProd = process.env.NODE_ENV === 'production';
+    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    const secureFlag = (isProd || isHttps) ? '; Secure' : '';
+
+    res.setHeader(
+      'Set-Cookie',
+      `nudge_guest=${sessionToken}; Path=/; Max-Age=${365 * 24 * 3600}; HttpOnly; SameSite=Lax${secureFlag}`
+    );
+  }
+
+  next();
+});
+
+/**
+ * Lightweight in-memory rate limiter for compute/AI-intensive routes
+ */
+const rateLimitBuckets = new Map();
+function rateLimit(maxRequests = 40, windowMs = 60000) {
+  return (req, res, next) => {
+    const key = `${req.guestId || req.ip}:${req.path}`;
+    const now = Date.now();
+    let bucket = rateLimitBuckets.get(key);
+
+    if (!bucket || now - bucket.startTime > windowMs) {
+      bucket = { count: 1, startTime: now };
+      rateLimitBuckets.set(key, bucket);
+      return next();
+    }
+
+    bucket.count++;
+    if (bucket.count > maxRequests) {
+      return res.status(429).json({
+        error: 'Too many requests. Please wait a moment before sending another message.',
+        code: 'RATE_LIMIT'
+      });
+    }
+
+    next();
+  };
+}
+
+// Clean up stale rate-limit buckets every 5 minutes
+const cleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateLimitBuckets.entries()) {
+    if (now - bucket.startTime > 120000) {
+      rateLimitBuckets.delete(key);
+    }
+  }
+}, 300000);
+if (cleanupTimer.unref) {
+  cleanupTimer.unref();
+}
 
 // Static frontend files
 app.use(express.static(path.join(__dirname, 'public')));
 
 /**
+ * Health check endpoint for Railway and deployment monitors
+ */
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: Math.round(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
  * Schedule automated reminders for an opportunity based on deadline
  */
-function scheduleOppReminders(oppId, deadlineStr, leadDays = 3) {
+function scheduleOppReminders(oppId, deadlineStr, leadDays = 3, guestId = 'default_guest') {
   if (!deadlineStr) return;
   const days = daysUntil(deadlineStr);
   const today = todayIST();
 
   let remindDateStr = addDays(-leadDays, deadlineStr);
-  // If reminder date would be in the past or today, set for today
   if (days <= leadDays) {
     remindDateStr = today;
   }
 
   // 9:00 AM IST = 03:30 UTC
   const remindAtIso = `${remindDateStr}T03:30:00.000Z`;
-  scheduleReminder('opportunity', oppId, remindAtIso);
+  scheduleReminder('opportunity', oppId, remindAtIso, guestId);
+}
+
+/**
+ * Schedule automated reminders for an academic task
+ */
+function scheduleTaskReminders(taskId, deadlineStr, leadDays = 1, guestId = 'default_guest') {
+  if (!deadlineStr) return;
+  const days = daysUntil(deadlineStr);
+  const today = todayIST();
+
+  let remindDateStr = addDays(-leadDays, deadlineStr);
+  if (days <= leadDays) {
+    remindDateStr = today;
+  }
+
+  // 9:00 AM IST = 03:30 UTC
+  const remindAtIso = `${remindDateStr}T03:30:00.000Z`;
+  scheduleReminder('task', taskId, remindAtIso, guestId);
 }
 
 /* ============================================================
-   REST API Endpoints
+   REST API Endpoints (All Scoped Strictly to req.guestId)
    ============================================================ */
 
 // 1. Full state
 app.get('/api/state', (req, res) => {
   try {
-    const state = getFullState();
+    const state = getFullState(req.guestId);
     res.json(state);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -95,17 +241,21 @@ app.get('/api/state', (req, res) => {
 app.get('/api/chat/:convId/messages', (req, res) => {
   try {
     const convId = parseInt(req.params.convId, 10);
-    const msgs = getMessages(convId);
+    const conv = getConversation(convId, req.guestId);
+    if (!conv) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    const msgs = getMessages(convId, req.guestId);
     res.json(msgs);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Conversations list / create
+// Conversations list / create / search / rename / delete
 app.get('/api/conversations', (req, res) => {
   try {
-    res.json(getConversations());
+    res.json(getConversations(req.guestId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -114,39 +264,107 @@ app.get('/api/conversations', (req, res) => {
 app.post('/api/conversations', (req, res) => {
   try {
     const title = req.body.title || 'New Copilot Chat';
-    const id = createConversation(title);
+    const id = createConversation(req.guestId, title);
     res.json({ id, title });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 3. Post chat message
-app.post('/api/chat', async (req, res) => {
+app.get('/api/conversations/search', (req, res) => {
+  try {
+    const { q } = req.query;
+    res.json(searchConversations(q, req.guestId));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/conversations/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { title } = req.body;
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Title is required' });
+    }
+    const existing = getConversation(id, req.guestId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    const conv = renameConversation(id, title.trim(), req.guestId);
+    res.json(conv);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/conversations/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getConversation(id, req.guestId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    deleteConversation(id, req.guestId);
+    res.json({ success: true, id, state: getFullState(req.guestId) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Post chat message with rate-limiting
+app.post('/api/chat', rateLimit(30, 60000), async (req, res) => {
   try {
     let { conversation_id, text = '', image = null } = req.body;
 
     if (!conversation_id) {
-      const convs = getConversations();
-      conversation_id = convs.length > 0 ? convs[0].id : createConversation();
+      const convs = getConversations(req.guestId);
+      conversation_id = convs.length > 0 ? convs[0].id : createConversation(req.guestId);
+    } else {
+      const conv = getConversation(conversation_id, req.guestId);
+      if (!conv) {
+        const convs = getConversations(req.guestId);
+        conversation_id = convs.length > 0 ? convs[0].id : createConversation(req.guestId);
+      }
     }
 
     if (!text && !image) {
       return res.status(400).json({ error: 'Message text or image is required' });
     }
 
-    // Persist user message
-    addMessage(conversation_id, 'user', text, null, image ? 'uploaded_poster.png' : null);
+    // Retrieve prior conversation history for context continuity
+    const history = getMessages(conversation_id, req.guestId).slice(-8);
 
-    // Run AI Extraction pipeline
-    const aiResult = await processUserInput({ text, image });
+    // Persist user message
+    addMessage(conversation_id, 'user', text, null, image ? 'uploaded_poster.png' : null, req.guestId);
+
+    // Run AI Extraction pipeline with conversation history
+    const aiResult = await processUserInput({ text, image, history });
     const { intent, items = [] } = aiResult;
+
+    // Auto-generate a readable conversation title if it's the first message and still default
+    const currentConv = getConversation(conversation_id, req.guestId);
+    if (currentConv && (currentConv.title === 'New Chat' || currentConv.title === 'New Copilot Chat' || currentConv.title === 'General Copilot')) {
+      const allMsgs = getMessages(conversation_id, req.guestId);
+      const userCount = allMsgs.filter(m => m.role === 'user').length;
+      if (userCount <= 1) {
+        let autoTitle = '';
+        if (items.length > 0 && items[0].title && items[0].title !== 'Opportunity' && items[0].title !== 'Provided Date') {
+          autoTitle = items[0].title;
+        } else if (text) {
+          autoTitle = text.replace(/https?:\/\/[^\s]+/g, '').replace(/[^\w\s-]/g, '').trim().split(/\s+/).slice(0, 5).join(' ');
+        }
+        if (autoTitle && autoTitle.length > 3) {
+          renameConversation(conversation_id, autoTitle.substring(0, 34), req.guestId);
+        }
+      }
+    }
 
     // Handle Intent 1: ask_deadlines
     if (intent === 'ask_deadlines') {
-      const opps = getOpportunities('pending');
-      const tasks = getTasks().filter(t => !t.done);
-      const events = getEvents();
+      const opps = getOpportunities('pending', req.guestId);
+      const tasks = getTasks(req.guestId).filter(t => !t.done);
+      const events = getEvents(req.guestId);
 
       let reply = `### 📅 Here is what's coming up on your radar:\n\n`;
 
@@ -179,12 +397,12 @@ app.post('/api/chat', async (req, res) => {
         }
       }
 
-      addMessage(conversation_id, 'bot', reply);
+      addMessage(conversation_id, 'bot', reply, null, null, req.guestId);
       return res.json({
         role: 'bot',
         text: reply,
         actions: null,
-        state: getFullState()
+        state: getFullState(req.guestId)
       });
     }
 
@@ -197,43 +415,79 @@ app.post('/api/chat', async (req, res) => {
         `• **Type naturally** (*"remind me to apply for Google SWE next Friday"*).\n` +
         `• **Ask anytime**: *"What is due this week?"*`;
 
-      addMessage(conversation_id, 'bot', reply);
+      addMessage(conversation_id, 'bot', reply, null, null, req.guestId);
       return res.json({
         role: 'bot',
         text: reply,
         actions: null,
-        state: getFullState()
+        state: getFullState(req.guestId)
       });
     }
 
-    // Handle Intent 3: add_event
+    // Handle Intent 3: ask_clarification
+    if (intent === 'ask_clarification' || aiResult.needs_clarification) {
+      const reply = aiResult.question || `❓ Could you clarify the exact deadline or opportunity details you'd like to track?`;
+      addMessage(conversation_id, 'bot', reply, null, null, req.guestId);
+      return res.json({
+        role: 'bot',
+        text: reply,
+        actions: null,
+        state: getFullState(req.guestId)
+      });
+    }
+
+    // Handle Intent 4: add_task
+    if (intent === 'add_task' && items.length > 0) {
+      const item = items[0];
+      const taskDate = item.deadline || item.reminder_at || null;
+      const taskId = insertTask({
+        title: item.title,
+        deadline: taskDate,
+        done: 0
+      }, req.guestId);
+
+      if (taskDate) {
+        scheduleTaskReminders(taskId, taskDate, 1, req.guestId);
+      }
+
+      const count = taskDate ? ` (${countdownText(taskDate)})` : '';
+      const reply = `✅ Added task: **${item.title}**${taskDate ? ` — due/reminder date on **${formatDateIST(taskDate)}**${count}` : ''}.`;
+      addMessage(conversation_id, 'bot', reply, null, null, req.guestId);
+      return res.json({
+        role: 'bot',
+        text: reply,
+        actions: null,
+        state: getFullState(req.guestId)
+      });
+    }
+
+    // Handle Intent 5: add_event
     if (intent === 'add_event' && items.length > 0) {
       const item = items[0];
       const eventDate = item.deadline || todayIST();
-      const eventId = insertEvent({
+      insertEvent({
         title: item.title,
         date: eventDate,
         time: item.time || null
-      });
+      }, req.guestId);
 
       const reply = `✅ Added **${item.title}** to your events calendar for **${formatDateIST(eventDate)}** ${item.time ? 'at ' + item.time : ''}.`;
-      addMessage(conversation_id, 'bot', reply);
+      addMessage(conversation_id, 'bot', reply, null, null, req.guestId);
       return res.json({
         role: 'bot',
         text: reply,
         actions: null,
-        state: getFullState()
+        state: getFullState(req.guestId)
       });
     }
 
-    // Handle Intent 4: save_opportunity or add_task or extracted items
+    // Handle Intent 6: save_opportunity or extracted opportunity items
     if (items.length > 0) {
       const item = items[0];
 
-      // Check for duplicate opportunity
-      const duplicate = findDuplicateOpportunity(item.org, item.title);
+      // Check for duplicate opportunity within this guest's data
+      const duplicate = findDuplicateOpportunity(item.org, item.title, req.guestId);
       if (duplicate) {
-        // Halt and prompt duplicate verification card
         const actions = {
           type: 'duplicate_verify',
           existing: {
@@ -255,12 +509,12 @@ app.post('/api/chat', async (req, res) => {
 
         const reply = `⚠️ **Duplicate Found:** I noticed you already have an entry for **${duplicate.title}** with deadline **${formatDateIST(duplicate.deadline) || 'Unset'}**.\n\nHow would you like to handle this?`;
 
-        addMessage(conversation_id, 'bot', reply, actions);
+        addMessage(conversation_id, 'bot', reply, actions, null, req.guestId);
         return res.json({
           role: 'bot',
           text: reply,
           actions,
-          state: getFullState()
+          state: getFullState(req.guestId)
         });
       }
 
@@ -300,12 +554,12 @@ app.post('/api/chat', async (req, res) => {
           `Please confirm or choose the exact date below:`;
       }
 
-      addMessage(conversation_id, 'bot', reply, actions);
+      addMessage(conversation_id, 'bot', reply, actions, null, req.guestId);
       return res.json({
         role: 'bot',
         text: reply,
         actions,
-        state: getFullState()
+        state: getFullState(req.guestId)
       });
     }
 
@@ -319,30 +573,63 @@ app.post('/api/chat', async (req, res) => {
       `• **Track an interview or event** (*"Microsoft interview on Oct 20 at 2pm"*)\n` +
       `• **Check your schedule** (*"What's due this week?"*)`;
 
-    addMessage(conversation_id, 'bot', reply);
+    addMessage(conversation_id, 'bot', reply, null, null, req.guestId);
     return res.json({
       role: 'bot',
       text: reply,
       actions: null,
-      state: getFullState()
+      state: getFullState(req.guestId)
     });
 
   } catch (err) {
     console.error('Error in /api/chat:', err);
-    res.status(500).json({ error: err.message });
+    const safeMsg = err.safeMessage || err.message || 'An error occurred while processing your request.';
+    const botErrorReply = `⚠️ **AI Processing Error:** ${safeMsg}`;
+    if (req.body && req.body.conversation_id) {
+      try {
+        addMessage(req.body.conversation_id, 'bot', botErrorReply, null, null, req.guestId);
+      } catch {}
+    }
+    res.status(err.code === 'MISSING_API_KEY' ? 400 : 502).json({
+      error: safeMsg,
+      code: err.code || 'AI_ERROR',
+      text: botErrorReply,
+      state: getFullState(req.guestId)
+    });
   }
 });
 
 // 4. Handle card interactive actions
 app.post('/api/action', (req, res) => {
   try {
-    const { action, payload, conversation_id } = req.body;
+    const { action, payload, conversation_id, message_id } = req.body;
+
+    if (conversation_id) {
+      const conv = getConversation(conversation_id, req.guestId);
+      if (!conv) {
+        return res.status(403).json({ error: 'Unauthorized conversation access' });
+      }
+    }
+
+    if (message_id) {
+      try {
+        const msg = db.prepare('SELECT actions FROM messages WHERE id = ?').get(message_id);
+        if (msg && msg.actions) {
+          const actObj = typeof msg.actions === 'string' ? JSON.parse(msg.actions) : msg.actions;
+          actObj.confirmed = true;
+          actObj.confirmed_action = action;
+          actObj.confirmed_at = new Date().toISOString();
+          updateMessageActions(message_id, actObj);
+        }
+      } catch (err) {
+        console.warn('Could not update message actions state:', err.message);
+      }
+    }
 
     let botReply = '';
     let updatedItem = null;
 
     if (action === 'accept_suggested') {
-      // 1-click accept of extracted date
       const oppId = insertOpportunity({
         title: payload.title,
         org: payload.org || null,
@@ -351,15 +638,14 @@ app.post('/api/action', (req, res) => {
         location: payload.location || null,
         url: payload.url || null,
         status: 'pending'
-      });
+      }, req.guestId);
 
-      scheduleOppReminders(oppId, payload.deadline);
-      updatedItem = getOpportunityById(oppId);
+      scheduleOppReminders(oppId, payload.deadline, 3, req.guestId);
+      updatedItem = getOpportunityById(oppId, req.guestId);
       botReply = `✅ Saved **${payload.title}**! Deadline confirmed for **${formatDateIST(payload.deadline)}** (${countdownText(payload.deadline)}). Proactive reminders are scheduled! 🚀`;
     }
 
     else if (action === 'set_manual') {
-      // Custom date confirmed
       const oppId = insertOpportunity({
         title: payload.title,
         org: payload.org || null,
@@ -368,26 +654,24 @@ app.post('/api/action', (req, res) => {
         location: payload.location || null,
         url: payload.url || null,
         status: 'pending'
-      });
+      }, req.guestId);
 
-      scheduleOppReminders(oppId, payload.deadline);
-      updatedItem = getOpportunityById(oppId);
+      scheduleOppReminders(oppId, payload.deadline, 3, req.guestId);
+      updatedItem = getOpportunityById(oppId, req.guestId);
       botReply = `✅ Saved **${payload.title}** with custom deadline **${formatDateIST(payload.deadline)}** (${countdownText(payload.deadline)}). We will nudge you before it's due! 🚀`;
     }
 
     else if (action === 'dup_update') {
-      // Update existing record
       updateOpportunity(payload.existingId, {
         deadline: payload.deadline,
         status: 'pending'
-      });
-      scheduleOppReminders(payload.existingId, payload.deadline);
-      updatedItem = getOpportunityById(payload.existingId);
-      botReply = `🔄 Updated existing entry **${updatedItem.title}**! New deadline is **${formatDateIST(payload.deadline)}** and status has been reset to **Pending**.`;
+      }, req.guestId);
+      scheduleOppReminders(payload.existingId, payload.deadline, 3, req.guestId);
+      updatedItem = getOpportunityById(payload.existingId, req.guestId);
+      botReply = `🔄 Updated existing entry **${updatedItem ? updatedItem.title : 'opportunity'}**! New deadline is **${formatDateIST(payload.deadline)}** and status has been reset to **Pending**.`;
     }
 
     else if (action === 'dup_add_anyway') {
-      // Add separate new entry
       const oppId = insertOpportunity({
         title: payload.title,
         org: payload.org || null,
@@ -396,9 +680,9 @@ app.post('/api/action', (req, res) => {
         location: payload.location || null,
         url: payload.url || null,
         status: 'pending'
-      });
-      scheduleOppReminders(oppId, payload.deadline);
-      updatedItem = getOpportunityById(oppId);
+      }, req.guestId);
+      scheduleOppReminders(oppId, payload.deadline, 3, req.guestId);
+      updatedItem = getOpportunityById(oppId, req.guestId);
       botReply = `➕ Added **${payload.title}** as a separate new entry with deadline **${formatDateIST(payload.deadline)}**.`;
     }
 
@@ -411,14 +695,14 @@ app.post('/api/action', (req, res) => {
     }
 
     if (conversation_id && botReply) {
-      addMessage(conversation_id, 'bot', botReply);
+      addMessage(conversation_id, 'bot', botReply, null, null, req.guestId);
     }
 
     res.json({
       success: true,
       botReply,
       item: updatedItem,
-      state: getFullState()
+      state: getFullState(req.guestId)
     });
 
   } catch (err) {
@@ -427,11 +711,207 @@ app.post('/api/action', (req, res) => {
   }
 });
 
+/* ============================================================
+   Cold Emailing & Outreach Tracker Endpoints
+   ============================================================ */
+
+app.get('/api/outreach', (req, res) => {
+  try {
+    const { status } = req.query;
+    res.json({
+      records: getOutreachRecords(status, req.guestId),
+      metrics: getOutreachMetrics(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/outreach/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const record = getOutreachById(id, req.guestId);
+    if (!record) return res.status(404).json({ error: 'Outreach record not found' });
+    res.json(record);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/outreach', (req, res) => {
+  try {
+    const {
+      contact_name, contact_email, organization, role, category,
+      subject, body, first_contact_date, status, next_followup_date,
+      notes, opportunity_id
+    } = req.body;
+
+    if (!contact_name || !contact_name.trim()) {
+      return res.status(400).json({ error: 'Contact name is required' });
+    }
+
+    const id = insertOutreach({
+      contact_name: contact_name.trim(),
+      contact_email: contact_email ? contact_email.trim() : null,
+      organization: organization ? organization.trim() : null,
+      role: role ? role.trim() : null,
+      category: category || 'internship',
+      subject: subject || null,
+      body: body || null,
+      first_contact_date: first_contact_date || null,
+      status: status || 'draft',
+      next_followup_date: next_followup_date || null,
+      notes: notes || null,
+      opportunity_id: opportunity_id ? parseInt(opportunity_id, 10) : null
+    }, req.guestId);
+
+    if (next_followup_date && status === 'sent') {
+      const remindAtIso = `${next_followup_date}T03:30:00.000Z`;
+      scheduleReminder('outreach', id, remindAtIso, req.guestId);
+    }
+
+    res.json({
+      success: true,
+      record: getOutreachById(id, req.guestId),
+      metrics: getOutreachMetrics(req.guestId),
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/outreach/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOutreachById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Record not found' });
+
+    const updated = updateOutreach(id, req.body, req.guestId);
+    res.json({
+      success: true,
+      record: updated,
+      metrics: getOutreachMetrics(req.guestId),
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/outreach/:id/sent', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOutreachById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Record not found' });
+
+    const { sent_date, next_followup_date } = req.body;
+    const updated = markOutreachSent(id, { sent_date, next_followup_date }, req.guestId);
+    res.json({
+      success: true,
+      record: updated,
+      metrics: getOutreachMetrics(req.guestId),
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/outreach/:id/reply', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOutreachById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Record not found' });
+
+    const { response_date, outcome, notes } = req.body;
+    const updated = recordOutreachReply(id, { response_date, outcome, notes }, req.guestId);
+    res.json({
+      success: true,
+      record: updated,
+      metrics: getOutreachMetrics(req.guestId),
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/outreach/:id/followup', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOutreachById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Record not found' });
+
+    const { next_followup_date, notes } = req.body;
+    if (!next_followup_date) {
+      return res.status(400).json({ error: 'next_followup_date is required' });
+    }
+    const updated = scheduleOutreachFollowup(id, { next_followup_date, notes }, req.guestId);
+    res.json({
+      success: true,
+      record: updated,
+      metrics: getOutreachMetrics(req.guestId),
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/outreach/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOutreachById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Record not found' });
+
+    deleteOutreach(id, req.guestId);
+    res.json({
+      success: true,
+      id,
+      metrics: getOutreachMetrics(req.guestId),
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/outreach/draft', rateLimit(25, 60000), async (req, res) => {
+  try {
+    const {
+      purpose, recipient_name, recipient_role, recipient_org,
+      user_background, opportunity_details, tone, is_followup
+    } = req.body;
+
+    const profile = getProfile(req.guestId);
+    const defaultBg = profile.college || profile.major 
+      ? `${profile.major ? profile.major + ' major' : 'Student'}${profile.college ? ' at ' + profile.college : ''}${profile.grad_year ? ' (Class of ' + profile.grad_year + ')' : ''}`
+      : 'Computer Science undergraduate student';
+
+    const draft = await generateColdEmailDraft({
+      purpose: purpose || 'internship',
+      recipient_name: recipient_name || '',
+      recipient_role: recipient_role || '',
+      recipient_org: recipient_org || '',
+      user_background: user_background || defaultBg,
+      opportunity_details: opportunity_details || '',
+      tone: tone || 'professional',
+      is_followup: !!is_followup
+    });
+
+    res.json(draft);
+  } catch (err) {
+    console.error('Error in /api/outreach/draft:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 5. Opportunities endpoints
 app.get('/api/opportunities', (req, res) => {
   try {
     const { status } = req.query;
-    res.json(getOpportunities(status));
+    res.json(getOpportunities(status, req.guestId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -441,9 +921,9 @@ app.post('/api/opportunities', (req, res) => {
   try {
     const { title, org, category, deadline, location, url, status } = req.body;
     if (!title) return res.status(400).json({ error: 'Title is required' });
-    const id = insertOpportunity({ title, org, category, deadline, location, url, status });
-    if (deadline) scheduleOppReminders(id, deadline);
-    res.json(getOpportunityById(id));
+    const id = insertOpportunity({ title, org, category, deadline, location, url, status }, req.guestId);
+    if (deadline) scheduleOppReminders(id, deadline, 3, req.guestId);
+    res.json(getOpportunityById(id, req.guestId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -456,7 +936,10 @@ app.post('/api/opportunities/:id/status', (req, res) => {
     if (!['pending', 'applied', 'rejected'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
-    const updated = updateOpportunityStatus(id, status);
+    const existing = getOpportunityById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Opportunity not found' });
+
+    const updated = updateOpportunityStatus(id, status, req.guestId);
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -466,7 +949,10 @@ app.post('/api/opportunities/:id/status', (req, res) => {
 app.delete('/api/opportunities/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    deleteOpportunity(id);
+    const existing = getOpportunityById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Opportunity not found' });
+
+    deleteOpportunity(id, req.guestId);
     res.json({ success: true, id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -475,7 +961,7 @@ app.delete('/api/opportunities/:id', (req, res) => {
 
 app.delete('/api/opportunities', (req, res) => {
   try {
-    clearOpportunities();
+    clearOpportunities(req.guestId);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -485,7 +971,7 @@ app.delete('/api/opportunities', (req, res) => {
 // 6. Tasks endpoints
 app.get('/api/tasks', (req, res) => {
   try {
-    res.json(getTasks());
+    res.json(getTasks(req.guestId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -495,7 +981,7 @@ app.post('/api/tasks', (req, res) => {
   try {
     const { title, deadline } = req.body;
     if (!title) return res.status(400).json({ error: 'Title is required' });
-    const id = insertTask({ title, deadline });
+    const id = insertTask({ title, deadline }, req.guestId);
     res.json({ id, title, deadline, done: 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -505,7 +991,8 @@ app.post('/api/tasks', (req, res) => {
 app.post('/api/tasks/:id/done', (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const updated = toggleTaskDone(id);
+    const updated = toggleTaskDone(id, req.guestId);
+    if (!updated) return res.status(404).json({ error: 'Task not found' });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -515,7 +1002,7 @@ app.post('/api/tasks/:id/done', (req, res) => {
 app.delete('/api/tasks/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    deleteTask(id);
+    deleteTask(id, req.guestId);
     res.json({ success: true, id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -525,7 +1012,7 @@ app.delete('/api/tasks/:id', (req, res) => {
 // 7. Events endpoints
 app.get('/api/events', (req, res) => {
   try {
-    res.json(getEvents());
+    res.json(getEvents(req.guestId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -535,7 +1022,7 @@ app.post('/api/events', (req, res) => {
   try {
     const { title, date, time } = req.body;
     if (!title || !date) return res.status(400).json({ error: 'Title and date are required' });
-    const id = insertEvent({ title, date, time });
+    const id = insertEvent({ title, date, time }, req.guestId);
     res.json({ id, title, date, time });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -545,7 +1032,7 @@ app.post('/api/events', (req, res) => {
 app.delete('/api/events/:id', (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    deleteEvent(id);
+    deleteEvent(id, req.guestId);
     res.json({ success: true, id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -555,7 +1042,7 @@ app.delete('/api/events/:id', (req, res) => {
 // 8. Profile endpoints
 app.get('/api/profile', (req, res) => {
   try {
-    res.json(getProfile());
+    res.json(getProfile(req.guestId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -563,18 +1050,18 @@ app.get('/api/profile', (req, res) => {
 
 app.post('/api/profile', (req, res) => {
   try {
-    const updated = updateProfile(req.body);
+    const updated = updateProfile(req.body, req.guestId);
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 9. Seed & Reset
+// 9. Seed & Reset (Scoped Strictly to the Calling Guest)
 app.post('/api/seed', (req, res) => {
   try {
-    seedDatabase();
-    res.json({ success: true, state: getFullState() });
+    seedDatabase(todayIST(), req.guestId);
+    res.json({ success: true, state: getFullState(req.guestId) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -582,8 +1069,8 @@ app.post('/api/seed', (req, res) => {
 
 app.post('/api/reset', (req, res) => {
   try {
-    resetDatabase();
-    res.json({ success: true, state: getFullState() });
+    resetDatabase(req.guestId);
+    res.json({ success: true, state: getFullState(req.guestId) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -600,7 +1087,7 @@ app.post('/api/push/subscribe', (req, res) => {
     if (!endpoint || !keys?.p256dh || !keys?.auth) {
       return res.status(400).json({ error: 'Invalid subscription payload' });
     }
-    insertPushSubscription(endpoint, keys.p256dh, keys.auth);
+    insertPushSubscription(endpoint, keys.p256dh, keys.auth, req.guestId);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -615,20 +1102,20 @@ app.post('/api/push/test', async (req, res) => {
       url: '/?v=opps',
       tag: 'test-push'
     };
-    const result = await sendPushToAll(payload);
+    const result = await sendPushToGuest(req.guestId, payload);
     res.json({ success: true, result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 11. Export Reports and Data to Excel (.xlsx)
+// 11. Export Reports and Data to Excel (.xlsx) - Scoped Strictly to Guest
 app.get('/api/export/excel', (req, res) => {
   try {
-    const opps = getOpportunities();
-    const tasks = getTasks();
-    const events = getEvents();
-    const profile = getProfile();
+    const opps = getOpportunities(null, req.guestId);
+    const tasks = getTasks(req.guestId);
+    const events = getEvents(req.guestId);
+    const profile = getProfile(req.guestId);
     const today = todayIST();
 
     const totalOpps = opps.length;
@@ -719,9 +1206,15 @@ app.get('/api/export/excel', (req, res) => {
 // 12. Personalized Welcome Message Endpoint
 app.post('/api/welcome', (req, res) => {
   try {
-    const { name = 'User', conversation_id = 1 } = req.body;
+    const { name = 'User', conversation_id = null } = req.body;
     const cleanName = (name && name.trim()) ? name.trim() : 'User';
-    updateProfile({ name: cleanName });
+    updateProfile({ name: cleanName }, req.guestId);
+
+    let targetConvId = conversation_id;
+    if (!targetConvId) {
+      const convs = getConversations(req.guestId);
+      targetConvId = convs.length > 0 ? convs[0].id : createConversation(req.guestId, 'General Copilot');
+    }
 
     const welcomeText = `👋 Welcome aboard, **${cleanName}**!\n\n` +
       `Your personal **Nudge Copilot** workspace is ready. You can now:\n` +
@@ -731,17 +1224,24 @@ app.post('/api/welcome', (req, res) => {
       `• **Ask anytime**: *"What is due this week?"*\n\n` +
       `What opportunity or deadline would you like to capture first? 🚀`;
 
-    addMessage(conversation_id, 'bot', welcomeText);
-    res.json({ success: true, text: welcomeText, state: getFullState() });
+    addMessage(targetConvId, 'bot', welcomeText, null, null, req.guestId);
+    res.json({ success: true, text: welcomeText, state: getFullState(req.guestId) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Start background cron scheduler
-startScheduler();
+let server = null;
+const isMain = process.argv[1] && (
+  process.argv[1] === fileURLToPath(import.meta.url) ||
+  process.argv[1].endsWith('server.js')
+);
 
-// Start HTTP server on 0.0.0.0:3000
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Nudge Copilot running at http://0.0.0.0:${PORT}`);
-});
+if (isMain) {
+  startScheduler();
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Nudge Copilot running at http://0.0.0.0:${PORT}`);
+  });
+}
+
+export { app, server };

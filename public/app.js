@@ -5,13 +5,19 @@
 
 // Global Reactive State
 const S = {
-  view: 'chat', // 'chat' | 'opps' | 'reports' | 'tasks' | 'events' | 'cal' | 'soon' | 'set'
+  view: 'chat', // 'chat' | 'opps' | 'outreach' | 'reports' | 'tasks' | 'events' | 'cal' | 'soon' | 'set'
   convId: null,
   convs: [],
   msgs: [],
   opps: [],
   tasks: [],
   events: [],
+  outreach: [],
+  outreachMetrics: {},
+  outreachFilter: 'all',
+  outreachSearch: '',
+  chatDrawerOpen: localStorage.getItem('nudge_chat_drawer_open') !== 'false',
+  sidebarCollapsed: localStorage.getItem('nudge_sidebar_collapsed') === 'true',
   profile: {
     name: 'User',
     goal: 'Internships & Jobs',
@@ -141,6 +147,8 @@ async function fetchState() {
     S.tasks = data.tasks || [];
     S.events = data.events || [];
     S.convs = data.convs || [];
+    S.outreach = data.outreach || [];
+    S.outreachMetrics = data.outreachMetrics || {};
 
     if (!S.convId && S.convs.length > 0) {
       S.convId = S.convs[0].id;
@@ -198,16 +206,19 @@ function updateBadges() {
     const diff = daysUntil(o.deadline);
     return diff !== null && diff <= 7 && diff >= 0;
   }).length;
+  const outreachDue = S.outreachMetrics?.followupDue || 0;
 
   const bOpps = document.getElementById('badge-opps');
   const bTasks = document.getElementById('badge-tasks');
   const bEvents = document.getElementById('badge-events');
   const bSoon = document.getElementById('badge-soon');
+  const bOutreach = document.getElementById('badge-outreach');
 
   if (bOpps) bOpps.textContent = pendingOpps;
   if (bTasks) bTasks.textContent = activeTasks;
   if (bEvents) bEvents.textContent = eventsCount;
   if (bSoon) bSoon.textContent = soonCount;
+  if (bOutreach) bOutreach.textContent = outreachDue;
 }
 
 /* ==========================================================================
@@ -229,11 +240,16 @@ function renderActiveView() {
 
   if (!root) return;
 
+  root.classList.toggle('chat-view-active', S.view === 'chat');
+
   switch (S.view) {
     case 'chat':
       titleEl.textContent = 'Copilot Assistant';
       subEl.textContent = 'Drop any link, poster flyer, or colloquial text to capture deadlines';
       actionsEl.innerHTML = `
+        <button class="btn btn-secondary btn-sm ${S.chatDrawerOpen ? 'active' : ''}" id="btn-toggle-chat-drawer" title="${S.chatDrawerOpen ? 'Collapse conversations sidebar (reserve space)' : 'Expand conversations sidebar'}">
+          💬 ${S.chatDrawerOpen ? 'Hide History' : `Chats (${S.convs.length})`}
+        </button>
         <button class="btn btn-primary btn-sm" id="btn-start-tour-header">✨ Start Tour</button>
         <button class="btn btn-secondary btn-sm" id="btn-load-demo-header">Load Demo</button>
       `;
@@ -250,6 +266,17 @@ function renderActiveView() {
       `;
       root.innerHTML = renderOpportunitiesView();
       setupOpportunitiesListeners();
+      break;
+
+    case 'outreach':
+      titleEl.textContent = 'Cold Emailing & Outreach Tracker';
+      subEl.textContent = 'Track student outreach, manage follow-up cadences, and generate high-converting drafts with Gemma 4';
+      actionsEl.innerHTML = `
+        <button class="btn btn-secondary btn-sm" id="btn-ai-draft-header">✨ AI Draft Assistant</button>
+        <button class="btn btn-primary btn-sm" id="btn-add-outreach-header">+ New Outreach</button>
+      `;
+      root.innerHTML = renderOutreachView();
+      setupOutreachListeners();
       break;
 
     case 'reports':
@@ -316,10 +343,86 @@ function renderActiveView() {
   }
 }
 
+function getNextActionableItem() {
+  const allItems = [];
+
+  (S.opps || []).forEach(o => {
+    if (o.status !== 'rejected' && o.deadline) {
+      const diff = daysUntil(o.deadline);
+      if (diff !== null && diff >= 0) {
+        allItems.push({
+          type: 'Opportunity',
+          title: o.title + (o.org ? ` (${o.org})` : ''),
+          date: o.deadline,
+          countdown: countdownText(o.deadline),
+          diff,
+          actionView: 'opps'
+        });
+      }
+    }
+  });
+
+  (S.tasks || []).forEach(t => {
+    if (!t.done && t.deadline) {
+      const diff = daysUntil(t.deadline);
+      if (diff !== null && diff >= 0) {
+        allItems.push({
+          type: 'Task',
+          title: t.title,
+          date: t.deadline,
+          countdown: countdownText(t.deadline),
+          diff,
+          actionView: 'tasks'
+        });
+      }
+    }
+  });
+
+  (S.outreach || []).forEach(r => {
+    if ((r.status === 'sent' || r.status === 'followup_due') && r.next_followup_date) {
+      const diff = daysUntil(r.next_followup_date);
+      if (diff !== null && diff >= 0) {
+        allItems.push({
+          type: 'Follow-up',
+          title: `Follow up with ${r.contact_name}${r.organization ? ` · ${r.organization}` : ''}`,
+          date: r.next_followup_date,
+          countdown: countdownText(r.next_followup_date),
+          diff,
+          actionView: 'outreach'
+        });
+      }
+    }
+  });
+
+  allItems.sort((a, b) => a.diff - b.diff);
+  return allItems.length > 0 ? allItems[0] : null;
+}
+
 /* ==========================================================================
    VIEW 1: Chat Assistant View
    ========================================================================== */
 function renderChatView() {
+  const filteredConvs = S.chatSearch
+    ? S.convs.filter(c => (c.title || '').toLowerCase().includes(S.chatSearch.toLowerCase()) || (c.last_snippet || '').toLowerCase().includes(S.chatSearch.toLowerCase()))
+    : S.convs;
+
+  const convListHtml = filteredConvs.map(c => {
+    const isActive = c.id === S.convId;
+    const msgCount = c.message_count !== undefined ? c.message_count : '';
+    return `
+      <div class="chat-session-item ${isActive ? 'active' : ''}" data-conv-id="${c.id}">
+        <div class="chat-session-top">
+          <span class="chat-session-title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</span>
+          <div class="chat-session-actions">
+            <button class="chat-item-btn edit" data-conv-action="rename" data-conv-id="${c.id}" title="Rename conversation">✏️</button>
+            <button class="chat-item-btn delete" data-conv-action="delete" data-conv-id="${c.id}" title="Delete conversation">🗑️</button>
+          </div>
+        </div>
+        ${c.last_snippet ? `<div class="chat-session-snippet">${escapeHtml(c.last_snippet.substring(0, 48))}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
   const msgsHtml = S.msgs.map(m => {
     let actionsObj = null;
     if (m.actions) {
@@ -329,10 +432,11 @@ function renderChatView() {
     }
 
     let actionsHtml = '';
+    const isConfirmed = actionsObj && actionsObj.confirmed === true;
     if (actionsObj && actionsObj.type === 'deadline_card') {
-      actionsHtml = renderDeadlineCard(actionsObj.item, m.id);
+      actionsHtml = renderDeadlineCard(actionsObj.item, m.id, isConfirmed);
     } else if (actionsObj && actionsObj.type === 'duplicate_verify') {
-      actionsHtml = renderDuplicateCard(actionsObj, m.id);
+      actionsHtml = renderDuplicateCard(actionsObj, m.id, isConfirmed);
     }
 
     const formattedText = renderMarkdown(m.text);
@@ -351,63 +455,104 @@ function renderChatView() {
     `;
   }).join('');
 
+  const nextItem = getNextActionableItem();
+  const nextItemHtml = nextItem ? `
+    <div class="next-priority-pill" data-view="${nextItem.actionView}" title="View in ${nextItem.type}">
+      <span class="next-priority-label">Next Priority</span>
+      <span class="next-priority-title">${escapeHtml(nextItem.title)}</span>
+      <span class="next-priority-date">${escapeHtml(nextItem.countdown)} · ${formatDate(nextItem.date)}</span>
+      <span class="next-priority-arrow">→</span>
+    </div>
+  ` : '';
+
   return `
-    <div id="chat-view-container">
-      <div class="chat-history" id="chat-history-box">
-        <!-- Hero Banner -->
-        <div class="hero-card">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:8px; flex-wrap:wrap;">
-            <div>
-              <h3>Welcome to Nudge Copilot</h3>
-              <p style="margin-bottom:0;">Drop a job link, paste a poster screenshot directly (<strong>Ctrl+V</strong>), or type colloquial text (<em>"remind me to apply for Google SWE next Friday"</em>). Nudge handles extraction, confirmation, and background reminders.</p>
-            </div>
-            <button class="btn btn-primary btn-sm" id="btn-hero-tour" style="box-shadow: 0 2px 8px var(--primary-glow); white-space:nowrap;">
-              ✨ Start Tour (Dummy Demo)
-            </button>
-          </div>
-          <div class="prompt-chips" style="margin-top:14px;">
-            <button class="chip-btn" data-prompt="What's due this week?">📅 What's due this week?</button>
-            <button class="chip-btn" data-prompt="Google Summer of Code application due 24 Oct 2026">💼 Google SSoC Application</button>
-            <button class="chip-btn" data-prompt="Smart India Hackathon finals due next Friday">💻 Hackathon Deadline</button>
-            <button class="chip-btn" data-prompt="Remind me to submit my Machine Learning assignment tomorrow">📝 Submit Assignment</button>
+    <div id="chat-layout">
+      <!-- Collapsible Chat Sessions Drawer -->
+      <aside class="chat-drawer ${S.chatDrawerOpen ? '' : 'collapsed'}" id="chat-drawer">
+        <div class="chat-drawer-header">
+          <span class="chat-drawer-title">💬 Conversations (${S.convs.length})</span>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <button class="btn btn-primary btn-sm" id="btn-new-chat" style="padding: 4px 8px; font-size: 0.74rem;">+ New</button>
+            <button class="btn-ghost-sm" id="btn-close-chat-drawer" title="Collapse conversations sidebar (reserve space)">◀</button>
           </div>
         </div>
+        <div class="chat-drawer-search">
+          <input type="text" id="chat-search-input" placeholder="Search chats by title or text..." value="${escapeHtml(S.chatSearch || '')}">
+        </div>
+        <div class="chat-drawer-list" id="chat-drawer-list">
+          ${convListHtml || `<div class="chat-drawer-empty">No conversations found</div>`}
+        </div>
+      </aside>
 
-        ${msgsHtml}
-
-        ${S.isSending ? `
-          <div class="msg-row bot">
-            <div class="msg-avatar">⚡</div>
-            <div class="msg-content-wrapper">
-              <div class="msg-bubble" style="display:flex; align-items:center; gap:8px;">
-                <span class="spinner-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--primary); animation:pulse 1s infinite alternate;"></span>
-                <span>Extracting deadline & details from input...</span>
-              </div>
-            </div>
+      <!-- Main Chat Area -->
+      <div class="chat-main-area">
+        ${!S.chatDrawerOpen ? `
+          <div class="chat-drawer-reopen-bar">
+            <button class="btn btn-secondary btn-sm" id="btn-reopen-chat-drawer" title="Expand conversations sidebar" style="padding: 3px 10px; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 6px;">
+              <span>💬 Show Conversations (${S.convs.length})</span>
+              <span style="font-size:0.68rem; color:var(--text-muted);">▶</span>
+            </button>
           </div>
         ` : ''}
-      </div>
+        <div class="chat-history" id="chat-history-box">
+          <!-- Welcoming Hero Banner -->
+          <div class="hero-card">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:8px; flex-wrap:wrap;">
+              <div>
+                <h3>Let's make today feel more manageable.</h3>
+                <p style="margin-bottom:0;">Drop an opportunity link, paste a poster screenshot, or describe an upcoming deadline. Nudge organizes your timeline, schedules reminders, and keeps your academic goals on track.</p>
+              </div>
+              <button class="btn btn-secondary btn-sm" id="btn-hero-tour" style="white-space:nowrap;">
+                ✨ Start Tour
+              </button>
+            </div>
 
-      <!-- Composer Bar -->
-      <div class="chat-composer-wrapper">
-        <div class="chat-composer">
-          <!-- Image upload preview thumbnail -->
-          <div class="image-preview-bar" id="image-preview-bar">
-            <img src="" class="image-preview-thumb" id="image-preview-img" alt="Preview">
-            <div class="image-preview-info">
-              <span class="image-preview-name" id="image-preview-name">poster.png</span>
-              <button class="image-preview-remove" id="image-preview-remove">✕ Remove</button>
+            ${nextItemHtml}
+
+            <div class="prompt-chips" style="margin-top:12px;">
+              <button class="chip-btn" data-prompt="What opportunities or deadlines are coming up?">🔍 Find opportunities</button>
+              <button class="chip-btn" data-prompt="Add task: Prepare project submission report for Friday">📝 Add a task</button>
+              <button class="chip-btn" data-prompt="Remind me in 3 days to check application status">⏰ Set a reminder</button>
+              <button class="chip-btn" data-prompt="Add opportunity: Summer Software Internship deadline 28 Oct">💼 Track an application</button>
             </div>
           </div>
 
-          <div class="composer-input-row">
-            <textarea class="composer-textarea" id="chat-textarea" rows="1" placeholder="Type a message, paste a link, or drop a flyer..."></textarea>
-            <div class="composer-tools">
-              <label class="icon-btn" title="Upload poster/screenshot (PNG, JPG, WebP)">
-                📷
-                <input type="file" id="chat-file-input" accept="image/png,image/jpeg,image/webp" style="display:none;">
-              </label>
-              <button class="send-btn" id="chat-send-btn" title="Send message (Enter)">➤</button>
+          ${msgsHtml}
+
+          ${S.isSending ? `
+            <div class="msg-row bot">
+              <div class="msg-avatar">⚡</div>
+              <div class="msg-content-wrapper">
+                <div class="msg-bubble" style="display:flex; align-items:center; gap:8px;">
+                  <span class="spinner-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--primary); animation:pulse 1s infinite alternate;"></span>
+                  <span>Extracting deadline & details from input...</span>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+        </div>
+
+        <!-- Composer Bar -->
+        <div class="chat-composer-wrapper">
+          <div class="chat-composer">
+            <!-- Image upload preview thumbnail -->
+            <div class="image-preview-bar" id="image-preview-bar">
+              <img src="" class="image-preview-thumb" id="image-preview-img" alt="Preview">
+              <div class="image-preview-info">
+                <span class="image-preview-name" id="image-preview-name">poster.png</span>
+                <button class="image-preview-remove" id="image-preview-remove">✕ Remove</button>
+              </div>
+            </div>
+
+            <div class="composer-input-row">
+              <textarea class="composer-textarea" id="chat-textarea" rows="1" placeholder="Type a message, paste a link, or drop a flyer..."></textarea>
+              <div class="composer-tools">
+                <label class="icon-btn" title="Upload poster/screenshot (PNG, JPG, WebP)">
+                  📷
+                  <input type="file" id="chat-file-input" accept="image/png,image/jpeg,image/webp" style="display:none;">
+                </label>
+                <button class="send-btn" id="chat-send-btn" title="Send message (Enter)">➤</button>
+              </div>
             </div>
           </div>
         </div>
@@ -416,9 +561,22 @@ function renderChatView() {
   `;
 }
 
-function renderDeadlineCard(item, msgId) {
+function renderDeadlineCard(item, msgId, isConfirmed = false) {
   const suggested = item.suggested_deadline || item.deadline || addDays(3);
   const countdown = countdownText(suggested);
+
+  if (isConfirmed) {
+    return `
+      <div class="action-card deadline-card confirmed-card" data-msg-id="${msgId}">
+        <div class="card-header-badge" style="color:var(--success);">✓ Confirmed & Scheduled</div>
+        <div class="card-title">${escapeHtml(item.title)}</div>
+        <div class="card-subtitle">${item.org ? `Organization: <strong>${escapeHtml(item.org)}</strong> • ` : ''}Category: <span class="badge badge-${item.category}">${item.category}</span></div>
+        <div class="card-confirmed-banner">
+          <span>✓ Deadline confirmed for <strong>${formatDate(suggested)}</strong> (${countdown}). Proactive reminders active.</span>
+        </div>
+      </div>
+    `;
+  }
 
   // Month and Year for mini calendar
   const today = todayIST();
@@ -512,9 +670,21 @@ function renderDeadlineCard(item, msgId) {
   `;
 }
 
-function renderDuplicateCard(dupObj, msgId) {
+function renderDuplicateCard(dupObj, msgId, isConfirmed = false) {
   const ex = dupObj.existing;
   const inc = dupObj.incoming;
+
+  if (isConfirmed) {
+    return `
+      <div class="action-card duplicate-card confirmed-card" data-msg-id="${msgId}">
+        <div class="card-header-badge" style="color:var(--success);">✓ Duplicate Resolution Saved</div>
+        <div class="card-title">${escapeHtml(inc.title || ex.title)}</div>
+        <div class="card-confirmed-banner">
+          <span>✓ Entry resolution saved to tracker.</span>
+        </div>
+      </div>
+    `;
+  }
 
   return `
     <div class="action-card duplicate-card" data-msg-id="${msgId}">
@@ -604,6 +774,146 @@ function setupChatListeners() {
   const fileInput = document.getElementById('chat-file-input');
   const removeImgBtn = document.getElementById('image-preview-remove');
 
+  // Toggle chat drawer from header
+  const toggleDrawerBtn = document.getElementById('btn-toggle-chat-drawer');
+  if (toggleDrawerBtn) {
+    toggleDrawerBtn.addEventListener('click', () => {
+      S.chatDrawerOpen = !S.chatDrawerOpen;
+      localStorage.setItem('nudge_chat_drawer_open', S.chatDrawerOpen ? 'true' : 'false');
+      renderActiveView();
+    });
+  }
+
+  // Close chat drawer from inside drawer header
+  const closeDrawerBtn = document.getElementById('btn-close-chat-drawer');
+  if (closeDrawerBtn) {
+    closeDrawerBtn.addEventListener('click', () => {
+      S.chatDrawerOpen = false;
+      localStorage.setItem('nudge_chat_drawer_open', 'false');
+      renderActiveView();
+    });
+  }
+
+  // Re-open chat drawer from inside main chat area
+  const reopenDrawerBtn = document.getElementById('btn-reopen-chat-drawer');
+  if (reopenDrawerBtn) {
+    reopenDrawerBtn.addEventListener('click', () => {
+      S.chatDrawerOpen = true;
+      localStorage.setItem('nudge_chat_drawer_open', 'true');
+      renderActiveView();
+    });
+  }
+
+  // New Chat button
+  const newChatBtn = document.getElementById('btn-new-chat');
+  if (newChatBtn) {
+    newChatBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/conversations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: 'New Copilot Chat' })
+        });
+        if (res.ok) {
+          const newConv = await res.json();
+          S.convId = newConv.id;
+          playChime();
+          showToast('Created new conversation', '💬');
+          await fetchState();
+        }
+      } catch (err) {
+        showToast('Could not create conversation', '⚠️');
+      }
+    });
+  }
+
+  // Chat search input
+  const searchInput = document.getElementById('chat-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      S.chatSearch = e.target.value;
+      const listEl = document.getElementById('chat-drawer-list');
+      if (listEl) {
+        const filteredConvs = S.chatSearch
+          ? S.convs.filter(c => (c.title || '').toLowerCase().includes(S.chatSearch.toLowerCase()) || (c.last_snippet || '').toLowerCase().includes(S.chatSearch.toLowerCase()))
+          : S.convs;
+        listEl.innerHTML = filteredConvs.map(c => `
+          <div class="chat-session-item ${c.id === S.convId ? 'active' : ''}" data-conv-id="${c.id}">
+            <div class="chat-session-top">
+              <span class="chat-session-title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</span>
+              <div class="chat-session-actions">
+                <button class="chat-item-btn edit" data-conv-action="rename" data-conv-id="${c.id}" title="Rename conversation">✏️</button>
+                <button class="chat-item-btn delete" data-conv-action="delete" data-conv-id="${c.id}" title="Delete conversation">🗑️</button>
+              </div>
+            </div>
+            ${c.last_snippet ? `<div class="chat-session-snippet">${escapeHtml(c.last_snippet.substring(0, 48))}</div>` : ''}
+          </div>
+        `).join('') || `<div class="chat-drawer-empty">No conversations found</div>`;
+      }
+    });
+  }
+
+  // Conversation session list click delegation
+  const drawerList = document.getElementById('chat-drawer-list');
+  if (drawerList) {
+    drawerList.addEventListener('click', async (e) => {
+      const renameBtn = e.target.closest('[data-conv-action="rename"]');
+      if (renameBtn) {
+        e.stopPropagation();
+        const cid = parseInt(renameBtn.dataset.convId, 10);
+        const currentConv = S.convs.find(c => c.id === cid);
+        const newTitle = prompt('Enter new conversation title:', currentConv?.title || '');
+        if (newTitle && newTitle.trim()) {
+          try {
+            const res = await fetch(`/api/conversations/${cid}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: newTitle.trim() })
+            });
+            if (res.ok) {
+              showToast('Conversation renamed', '✓');
+              await fetchState();
+            }
+          } catch (err) {
+            showToast('Failed to rename conversation', '⚠️');
+          }
+        }
+        return;
+      }
+
+      const deleteBtn = e.target.closest('[data-conv-action="delete"]');
+      if (deleteBtn) {
+        e.stopPropagation();
+        const cid = parseInt(deleteBtn.dataset.convId, 10);
+        if (confirm('Delete this conversation? Chat history will be permanently removed (your saved opportunities and tasks will NOT be deleted).')) {
+          try {
+            const res = await fetch(`/api/conversations/${cid}`, { method: 'DELETE' });
+            if (res.ok) {
+              showToast('Conversation deleted', '✓');
+              if (S.convId === cid) {
+                S.convId = null;
+              }
+              await fetchState();
+            }
+          } catch (err) {
+            showToast('Failed to delete conversation', '⚠️');
+          }
+        }
+        return;
+      }
+
+      const sessionItem = e.target.closest('.chat-session-item');
+      if (sessionItem) {
+        const cid = parseInt(sessionItem.dataset.convId, 10);
+        if (cid && cid !== S.convId) {
+          S.convId = cid;
+          await fetchMessages(cid);
+          renderActiveView();
+        }
+      }
+    });
+  }
+
   // Tour buttons
   const tourHeaderBtn = document.getElementById('btn-start-tour-header');
   const tourHeroBtn = document.getElementById('btn-hero-tour');
@@ -630,6 +940,14 @@ function setupChatListeners() {
       }
     });
   });
+
+  // Next priority navigation pill
+  document.querySelectorAll('.next-priority-pill[data-view]').forEach(pill => {
+    pill.addEventListener('click', () => {
+      setView(pill.dataset.view);
+    });
+  });
+
 
   // Textarea auto-resize & Enter key
   if (textarea) {
@@ -694,7 +1012,7 @@ function setupChatListeners() {
     const clipboardData = e.clipboardData || window.clipboardData;
     if (!clipboardData) return;
 
-    // 1. Check for image item in clipboard (e.g. Win+Shift+S or copied photo)
+    // 1. Check for image item in clipboard
     const items = clipboardData.items;
     let imageItem = null;
     if (items) {
@@ -851,6 +1169,8 @@ function setupChatListeners() {
       }
 
       const act = target.dataset.act;
+      const card = target.closest('.action-card');
+      const msgId = card ? parseInt(card.dataset.msgId, 10) : null;
 
       if (act === 'accept_suggested') {
         const payload = {
@@ -861,12 +1181,12 @@ function setupChatListeners() {
           location: target.dataset.loc,
           url: target.dataset.url
         };
-        await executeCardAction('accept_suggested', payload);
+        await executeCardAction('accept_suggested', payload, msgId);
       }
 
       else if (act === 'set_manual') {
-        const msgId = target.dataset.msgTarget;
-        const dateInput = document.getElementById(`manual-date-${msgId}`);
+        const targetId = target.dataset.msgTarget;
+        const dateInput = document.getElementById(`manual-date-${targetId}`);
         const customDate = dateInput ? dateInput.value : todayIST();
 
         const payload = {
@@ -877,7 +1197,7 @@ function setupChatListeners() {
           location: target.dataset.loc,
           url: target.dataset.url
         };
-        await executeCardAction('set_manual', payload);
+        await executeCardAction('set_manual', payload, msgId);
       }
 
       else if (act === 'dup_update') {
@@ -885,7 +1205,7 @@ function setupChatListeners() {
           existingId: parseInt(target.dataset.exId, 10),
           deadline: target.dataset.deadline
         };
-        await executeCardAction('dup_update', payload);
+        await executeCardAction('dup_update', payload, msgId);
       }
 
       else if (act === 'dup_add_anyway') {
@@ -895,11 +1215,11 @@ function setupChatListeners() {
           category: target.dataset.cat,
           deadline: target.dataset.deadline
         };
-        await executeCardAction('dup_add_anyway', payload);
+        await executeCardAction('dup_add_anyway', payload, msgId);
       }
 
       else if (act === 'dup_cancel') {
-        await executeCardAction('dup_cancel', {});
+        await executeCardAction('dup_cancel', {}, msgId);
       }
     });
   }
@@ -955,6 +1275,9 @@ async function sendChatMessage() {
       S.opps = data.state.opps || S.opps;
       S.tasks = data.state.tasks || S.tasks;
       S.events = data.state.events || S.events;
+      S.convs = data.state.convs || S.convs;
+      S.outreach = data.state.outreach || S.outreach;
+      S.outreachMetrics = data.state.outreachMetrics || S.outreachMetrics;
     }
 
     if (S.convId) {
@@ -972,7 +1295,7 @@ async function sendChatMessage() {
   }
 }
 
-async function executeCardAction(action, payload) {
+async function executeCardAction(action, payload, msgId = null) {
   try {
     const res = await fetch('/api/action', {
       method: 'POST',
@@ -980,7 +1303,8 @@ async function executeCardAction(action, payload) {
       body: JSON.stringify({
         action,
         payload,
-        conversation_id: S.convId
+        conversation_id: S.convId,
+        message_id: msgId
       })
     });
 
@@ -988,12 +1312,23 @@ async function executeCardAction(action, payload) {
     const data = await res.json();
 
     playChime();
-    showToast('Action confirmed!', '✓');
+    if (action === 'accept_suggested' || action === 'set_manual') {
+      showToast('Opportunity saved.', '✓');
+    } else if (action === 'create_task') {
+      showToast('Task added to your list.', '✓');
+    } else if (action === 'create_event') {
+      showToast('Reminder scheduled.', '✓');
+    } else {
+      showToast('Opportunity saved.', '✓');
+    }
 
     if (data.state) {
       S.opps = data.state.opps || S.opps;
       S.tasks = data.state.tasks || S.tasks;
       S.events = data.state.events || S.events;
+      S.convs = data.state.convs || S.convs;
+      S.outreach = data.state.outreach || S.outreach;
+      S.outreachMetrics = data.state.outreachMetrics || S.outreachMetrics;
     }
 
     if (S.convId) {
@@ -1027,10 +1362,13 @@ function renderOpportunitiesView() {
   });
 
   const cardsHtml = filtered.length === 0 ? `
-    <div style="grid-column: 1/-1; text-align:center; padding: 48px; color:var(--text-muted); background:var(--bg-card); border-radius:var(--radius-lg); border:1px solid var(--border-subtle);">
-      <div style="font-size: 2.2rem; margin-bottom: 8px;">🎯</div>
-      <h3>No opportunities found in this tab</h3>
-      <p style="margin-top: 4px; font-size: 0.88rem;">Drop an internship link in the Chat Assistant or click "+ Add Opportunity" to get started.</p>
+    <div class="outreach-empty-state" style="grid-column: 1/-1;">
+      <div class="empty-icon" style="font-size: 2.2rem; margin-bottom: 4px;">🎯</div>
+      <h3 style="font-size: 1.05rem; font-weight: 600; color: var(--text-main); margin-bottom: 4px;">Your application tracker is ready</h3>
+      <p style="color: var(--text-secondary); max-width: 440px; font-size: 0.86rem; line-height: 1.5;">
+        Keep track of internships, scholarships, and fellowships. Drop a link or poster into Copilot, or record an application directly.
+      </p>
+      <button class="btn btn-primary btn-sm" id="btn-empty-add-opp" style="margin-top: 8px;">+ Add an opportunity</button>
     </div>
   ` : filtered.map(o => {
     const countdown = countdownText(o.deadline);
@@ -1103,6 +1441,11 @@ function setupOpportunitiesListeners() {
   const addBtn = document.getElementById('btn-add-opp-modal');
   if (addBtn) {
     addBtn.addEventListener('click', openAddOpportunityModal);
+  }
+
+  const emptyAddBtn = document.getElementById('btn-empty-add-opp');
+  if (emptyAddBtn) {
+    emptyAddBtn.addEventListener('click', openAddOpportunityModal);
   }
 
   // Clear all button
@@ -1267,6 +1610,979 @@ function openAddOpportunityModal() {
 }
 
 /* ==========================================================================
+   VIEW: Cold Emailing & Outreach Tracker
+   ========================================================================== */
+function renderOutreachView() {
+  const m = S.outreachMetrics || {
+    total: S.outreach.length,
+    drafts: 0,
+    sent: 0,
+    replied: 0,
+    replyRate: 0,
+    meetings: 0,
+    followupDue: 0
+  };
+
+  const today = todayIST();
+
+  // Filter records
+  const filtered = S.outreach.filter(o => {
+    // Status tab filter
+    if (S.outreachFilter === 'draft' && (o.status !== 'draft' && o.status !== 'ready_to_send')) return false;
+    if (S.outreachFilter === 'sent' && o.status !== 'sent') return false;
+    if (S.outreachFilter === 'due') {
+      const isDue = (o.status === 'sent' || o.status === 'followup_due') && o.next_followup_date && o.next_followup_date <= today;
+      if (!isDue) return false;
+    }
+    if (S.outreachFilter === 'replied' && (o.status !== 'replied' && o.status !== 'meeting_scheduled')) return false;
+    if (S.outreachFilter === 'meeting' && o.status !== 'meeting_scheduled') return false;
+    if (S.outreachFilter === 'closed' && o.status !== 'closed') return false;
+
+    // Search filter
+    if (S.outreachSearch) {
+      const q = S.outreachSearch.toLowerCase();
+      const match = (o.contact_name || '').toLowerCase().includes(q) ||
+        (o.organization || '').toLowerCase().includes(q) ||
+        (o.role || '').toLowerCase().includes(q) ||
+        (o.subject || '').toLowerCase().includes(q) ||
+        (o.notes || '').toLowerCase().includes(q);
+      if (!match) return false;
+    }
+
+    return true;
+  });
+
+  const cardsHtml = filtered.length === 0 ? `
+    <div class="outreach-empty-state">
+      <div class="empty-icon" style="font-size:2.4rem; margin-bottom:4px;">📨</div>
+      <h3 style="font-size:1.05rem; font-weight:600; color:var(--text-main); margin-bottom:4px;">Your outreach starts here.</h3>
+      <p style="color:var(--text-secondary); max-width:440px; font-size:0.86rem; line-height:1.5;">
+        Keep track of the people you contact and know when to follow up. Generate authentic email drafts with Gemma 4 or log existing outreach.
+      </p>
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button class="btn btn-primary btn-sm" id="btn-empty-add-outreach">+ Add an outreach record</button>
+        <button class="btn btn-secondary btn-sm" id="btn-empty-ai-draft">✨ Draft with Gemma 4</button>
+      </div>
+    </div>
+  ` : filtered.map(o => {
+    const isDue = (o.status === 'sent' || o.status === 'followup_due') && o.next_followup_date && o.next_followup_date <= today;
+    const diff = o.next_followup_date ? daysUntil(o.next_followup_date) : null;
+    const countdown = o.next_followup_date ? countdownText(o.next_followup_date) : '';
+
+    return `
+      <div class="outreach-card" data-outreach-id="${o.id}">
+        <div class="outreach-card-top">
+          <div class="outreach-contact-info">
+            <span class="outreach-contact-name">${escapeHtml(o.contact_name)}</span>
+            <span class="outreach-contact-role">${escapeHtml(o.role || 'Professional')}${o.organization ? ` at <strong class="outreach-contact-org">${escapeHtml(o.organization)}</strong>` : ''}</span>
+            ${o.contact_email ? `
+              <a href="mailto:${escapeHtml(o.contact_email)}" style="color:var(--text-muted); font-size:0.75rem; text-decoration:none; margin-top:2px;" title="Email contact">
+                ✉️ ${escapeHtml(o.contact_email)}
+              </a>
+            ` : ''}
+          </div>
+          <div class="outreach-badges-row">
+            <span class="badge badge-${o.category || 'internship'}">${o.category || 'internship'}</span>
+            <span class="badge-status badge-status-${isDue ? 'due' : o.status}">
+              ${isDue ? '⏰ Follow-up Due' : o.status.replace('_', ' ')}
+            </span>
+          </div>
+        </div>
+
+        ${o.subject ? `
+          <div class="outreach-subject-preview" title="Subject preview">
+            <strong>Subj:</strong> ${escapeHtml(o.subject)}
+          </div>
+        ` : ''}
+
+        <div class="outreach-meta-row">
+          <span>First Contact: <strong>${formatDate(o.first_contact_date)}</strong></span>
+          ${o.next_followup_date ? `
+            <span class="outreach-followup-pill ${isDue ? 'urgent' : ''}">
+              ⏰ Next: ${formatDate(o.next_followup_date)} (${countdown})
+            </span>
+          ` : ''}
+          ${o.response_date ? `<span>Replied: <strong>${formatDate(o.response_date)}</strong></span>` : ''}
+        </div>
+
+        ${o.notes ? `
+          <div class="outreach-notes-snippet">
+            ${escapeHtml(o.notes)}
+          </div>
+        ` : ''}
+
+        <div class="outreach-card-actions">
+          <button class="btn btn-secondary btn-sm" data-outreach-act="copy" data-id="${o.id}" title="Copy email subject and body to clipboard">
+            📋 Copy
+          </button>
+          ${o.status === 'draft' || o.status === 'ready_to_send' ? `
+            <button class="btn btn-primary btn-sm" data-outreach-act="mark-sent" data-id="${o.id}">
+              ✉️ Mark Sent
+            </button>
+          ` : `
+            <button class="btn btn-secondary btn-sm" data-outreach-act="schedule-followup" data-id="${o.id}">
+              ⏰ Follow-up
+            </button>
+            <button class="btn btn-secondary btn-sm" data-outreach-act="record-reply" data-id="${o.id}">
+              💬 Reply
+            </button>
+          `}
+          <button class="btn btn-secondary btn-sm" data-outreach-act="edit" data-id="${o.id}" title="Edit contact details">
+            ✏️
+          </button>
+          <button class="btn btn-secondary btn-sm" data-outreach-act="delete" data-id="${o.id}" style="color:var(--danger);" title="Delete outreach">
+            🗑️
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="outreach-container">
+      <!-- 6 Metrics Cards Row -->
+      <div class="outreach-metrics-grid">
+        <div class="outreach-metric-card">
+          <span class="outreach-metric-label">Total Contacts</span>
+          <span class="outreach-metric-value">${m.total}</span>
+        </div>
+        <div class="outreach-metric-card">
+          <span class="outreach-metric-label">Drafts</span>
+          <span class="outreach-metric-value">${m.drafts}</span>
+        </div>
+        <div class="outreach-metric-card">
+          <span class="outreach-metric-label">Sent</span>
+          <span class="outreach-metric-value">${m.sent}</span>
+        </div>
+        <div class="outreach-metric-card ${m.followupDue > 0 ? 'due-alert' : ''}">
+          <span class="outreach-metric-label">Follow-ups Due</span>
+          <span class="outreach-metric-value" style="${m.followupDue > 0 ? 'color:var(--warning);' : ''}">${m.followupDue}</span>
+        </div>
+        <div class="outreach-metric-card highlight">
+          <span class="outreach-metric-label">Replied (${m.replyRate}%)</span>
+          <span class="outreach-metric-value" style="color:var(--success);">${m.replied}</span>
+        </div>
+        <div class="outreach-metric-card highlight">
+          <span class="outreach-metric-label">Meetings</span>
+          <span class="outreach-metric-value" style="color:var(--primary);">${m.meetings}</span>
+        </div>
+      </div>
+
+      <!-- Controls: Tabs + Search -->
+      <div class="outreach-controls-bar">
+        <div class="outreach-tabs">
+          <button class="outreach-tab-btn ${S.outreachFilter === 'all' ? 'active' : ''}" data-outreach-filter="all">All (${S.outreach.length})</button>
+          <button class="outreach-tab-btn ${S.outreachFilter === 'draft' ? 'active' : ''}" data-outreach-filter="draft">Drafts (${m.drafts})</button>
+          <button class="outreach-tab-btn ${S.outreachFilter === 'sent' ? 'active' : ''}" data-outreach-filter="sent">Sent (${m.sent})</button>
+          <button class="outreach-tab-btn ${S.outreachFilter === 'due' ? 'active' : ''}" data-outreach-filter="due">Follow-ups Due (${m.followupDue})</button>
+          <button class="outreach-tab-btn ${S.outreachFilter === 'replied' ? 'active' : ''}" data-outreach-filter="replied">Replied (${m.replied})</button>
+          <button class="outreach-tab-btn ${S.outreachFilter === 'meeting' ? 'active' : ''}" data-outreach-filter="meeting">Meetings (${m.meetings})</button>
+          <button class="outreach-tab-btn ${S.outreachFilter === 'closed' ? 'active' : ''}" data-outreach-filter="closed">Closed</button>
+        </div>
+
+        <div class="outreach-search-box">
+          <input type="text" class="outreach-search-input" id="outreach-search-input" placeholder="Search contacts, orgs, subjects..." value="${escapeHtml(S.outreachSearch || '')}">
+        </div>
+      </div>
+
+      <!-- Outreach Cards Grid -->
+      <div class="outreach-cards-grid">
+        ${cardsHtml}
+      </div>
+    </div>
+  `;
+}
+
+function setupOutreachListeners() {
+  // Tabs
+  document.querySelectorAll('[data-outreach-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      S.outreachFilter = btn.dataset.outreachFilter;
+      renderActiveView();
+    });
+  });
+
+  // Search input
+  const searchInput = document.getElementById('outreach-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      S.outreachSearch = e.target.value;
+      renderActiveView();
+      // Keep focus on search input after re-render
+      const newSearchInput = document.getElementById('outreach-search-input');
+      if (newSearchInput) {
+        newSearchInput.focus();
+        newSearchInput.setSelectionRange(newSearchInput.value.length, newSearchInput.value.length);
+      }
+    });
+  }
+
+  // Header buttons
+  document.getElementById('btn-add-outreach-header')?.addEventListener('click', () => openAddOutreachModal());
+  document.getElementById('btn-ai-draft-header')?.addEventListener('click', () => openAIDraftModal());
+
+  // Empty state buttons
+  document.getElementById('btn-empty-add-outreach')?.addEventListener('click', () => openAddOutreachModal());
+  document.getElementById('btn-empty-ai-draft')?.addEventListener('click', () => openAIDraftModal());
+
+  // Card action delegation
+  const grid = document.querySelector('.outreach-cards-grid');
+  if (grid) {
+    grid.addEventListener('click', async (e) => {
+      const actBtn = e.target.closest('[data-outreach-act]');
+      if (!actBtn) return;
+
+      const act = actBtn.dataset.outreachAct;
+      const id = parseInt(actBtn.dataset.id, 10);
+      const record = S.outreach.find(r => r.id === id);
+      if (!record && act !== 'draft') return;
+
+      if (act === 'copy') {
+        const textToCopy = `Subject: ${record.subject || ''}\n\n${record.body || ''}`.trim();
+        if (textToCopy) {
+          navigator.clipboard.writeText(textToCopy);
+          playChime();
+          showToast('Subject & body copied to clipboard! 📋', '✓');
+        } else {
+          showToast('No email content to copy', '⚠️');
+        }
+      }
+
+      else if (act === 'mark-sent') {
+        openMarkSentModal(id);
+      }
+
+      else if (act === 'schedule-followup') {
+        openScheduleFollowupModal(id);
+      }
+
+      else if (act === 'record-reply') {
+        openRecordReplyModal(id);
+      }
+
+      else if (act === 'edit') {
+        openEditOutreachModal(id);
+      }
+
+      else if (act === 'delete') {
+        if (confirm(`Delete outreach record for ${record.contact_name}?`)) {
+          try {
+            const res = await fetch(`/api/outreach/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+              playChime();
+              showToast('Outreach record deleted', '✓');
+              await fetchState();
+            }
+          } catch (err) {
+            showToast('Failed to delete outreach record', '⚠️');
+          }
+        }
+      }
+    });
+  }
+}
+
+function openAddOutreachModal(initial = null) {
+  const modalRoot = document.getElementById('modal-container');
+  modalRoot.style.display = 'flex';
+  modalRoot.className = 'modal-backdrop';
+
+  const contactName = initial?.contact_name || '';
+  const contactEmail = initial?.contact_email || '';
+  const organization = initial?.organization || '';
+  const role = initial?.role || '';
+  const category = initial?.category || 'internship';
+  const subject = initial?.subject || '';
+  const body = initial?.body || '';
+  const notes = initial?.notes || '';
+  const status = initial?.status || 'draft';
+  const followupDate = initial?.next_followup_date || '';
+
+  modalRoot.innerHTML = `
+    <div class="modal-box" style="max-width: 580px;">
+      <div class="modal-title">➕ Add Outreach Contact</div>
+      <div class="modal-body" style="max-height: 72vh; overflow-y: auto;">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Contact Name *</label>
+            <input type="text" id="modal-out-name" class="input-control" value="${escapeHtml(contactName)}" placeholder="e.g. Dr. Priya Sharma" required autofocus>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Contact Email</label>
+            <input type="email" id="modal-out-email" class="input-control" value="${escapeHtml(contactEmail)}" placeholder="e.g. priya@google.com">
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Company / Organization</label>
+            <input type="text" id="modal-out-org" class="input-control" value="${escapeHtml(organization)}" placeholder="e.g. Google DeepMind">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Contact Role</label>
+            <input type="text" id="modal-out-role" class="input-control" value="${escapeHtml(role)}" placeholder="e.g. Research Scientist">
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Category</label>
+            <select id="modal-out-cat" class="input-control">
+              <option value="internship" ${category === 'internship' ? 'selected' : ''}>Internship</option>
+              <option value="research" ${category === 'research' ? 'selected' : ''}>Research / Lab</option>
+              <option value="referral" ${category === 'referral' ? 'selected' : ''}>Referral Inquiry</option>
+              <option value="fulltime" ${category === 'fulltime' ? 'selected' : ''}>Full-time Role</option>
+              <option value="other" ${category === 'other' ? 'selected' : ''}>Networking / Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Initial Status</label>
+            <select id="modal-out-status" class="input-control">
+              <option value="draft" ${status === 'draft' ? 'selected' : ''}>Draft</option>
+              <option value="ready_to_send" ${status === 'ready_to_send' ? 'selected' : ''}>Ready to Send</option>
+              <option value="sent" ${status === 'sent' ? 'selected' : ''}>Already Sent</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label">Subject Line</label>
+          <input type="text" id="modal-out-subject" class="input-control" value="${escapeHtml(subject)}" placeholder="e.g. Undergraduate Research Inquiry: Multimodal Agents">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label">Email Body</label>
+          <textarea id="modal-out-body" class="input-control" style="min-height: 120px; font-family: inherit; line-height: 1.45;" placeholder="Draft email body...">${escapeHtml(body)}</textarea>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Next Follow-up Date (Optional)</label>
+            <input type="date" id="modal-out-followup" class="input-control" value="${escapeHtml(followupDate)}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Notes / Follow-up Strategy</label>
+            <input type="text" id="modal-out-notes" class="input-control" value="${escapeHtml(notes)}" placeholder="e.g. Paper referenced: Gemma fine-tuning">
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="modal-out-cancel">Cancel</button>
+        <button class="btn btn-primary" id="modal-out-save">Save Outreach</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('modal-out-cancel').addEventListener('click', () => {
+    modalRoot.style.display = 'none';
+  });
+
+  document.getElementById('modal-out-save').addEventListener('click', async () => {
+    const contact_name = document.getElementById('modal-out-name').value.trim();
+    if (!contact_name) {
+      showToast('Contact name is required', '⚠️');
+      return;
+    }
+    const contact_email = document.getElementById('modal-out-email').value.trim();
+    const organization = document.getElementById('modal-out-org').value.trim();
+    const role = document.getElementById('modal-out-role').value.trim();
+    const category = document.getElementById('modal-out-cat').value;
+    const status = document.getElementById('modal-out-status').value;
+    const subject = document.getElementById('modal-out-subject').value.trim();
+    const body = document.getElementById('modal-out-body').value.trim();
+    const next_followup_date = document.getElementById('modal-out-followup').value || null;
+    const notes = document.getElementById('modal-out-notes').value.trim();
+    const first_contact_date = status === 'sent' ? todayIST() : null;
+
+    modalRoot.style.display = 'none';
+
+    try {
+      const res = await fetch('/api/outreach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contact_name,
+          contact_email,
+          organization,
+          role,
+          category,
+          status,
+          subject,
+          body,
+          first_contact_date,
+          next_followup_date,
+          notes
+        })
+      });
+
+      if (res.ok) {
+        playChime();
+        showToast(`Outreach contact for ${contact_name} saved!`, '✓');
+        await fetchState();
+      } else {
+        showToast('Failed to save outreach', '⚠️');
+      }
+    } catch (err) {
+      showToast('Server error saving outreach', '⚠️');
+    }
+  });
+}
+
+function openEditOutreachModal(id) {
+  const o = S.outreach.find(r => r.id === id);
+  if (!o) return;
+
+  const modalRoot = document.getElementById('modal-container');
+  modalRoot.style.display = 'flex';
+  modalRoot.className = 'modal-backdrop';
+
+  modalRoot.innerHTML = `
+    <div class="modal-box" style="max-width: 580px;">
+      <div class="modal-title">✏️ Edit Outreach Record</div>
+      <div class="modal-body" style="max-height: 72vh; overflow-y: auto;">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Contact Name *</label>
+            <input type="text" id="modal-edit-name" class="input-control" value="${escapeHtml(o.contact_name)}" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Contact Email</label>
+            <input type="email" id="modal-edit-email" class="input-control" value="${escapeHtml(o.contact_email || '')}">
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Company / Organization</label>
+            <input type="text" id="modal-edit-org" class="input-control" value="${escapeHtml(o.organization || '')}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Contact Role</label>
+            <input type="text" id="modal-edit-role" class="input-control" value="${escapeHtml(o.role || '')}">
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Category</label>
+            <select id="modal-edit-cat" class="input-control">
+              <option value="internship" ${o.category === 'internship' ? 'selected' : ''}>Internship</option>
+              <option value="research" ${o.category === 'research' ? 'selected' : ''}>Research / Lab</option>
+              <option value="referral" ${o.category === 'referral' ? 'selected' : ''}>Referral Inquiry</option>
+              <option value="fulltime" ${o.category === 'fulltime' ? 'selected' : ''}>Full-time Role</option>
+              <option value="other" ${o.category === 'other' ? 'selected' : ''}>Networking / Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Status</label>
+            <select id="modal-edit-status" class="input-control">
+              <option value="draft" ${o.status === 'draft' ? 'selected' : ''}>Draft</option>
+              <option value="ready_to_send" ${o.status === 'ready_to_send' ? 'selected' : ''}>Ready to Send</option>
+              <option value="sent" ${o.status === 'sent' ? 'selected' : ''}>Sent</option>
+              <option value="replied" ${o.status === 'replied' ? 'selected' : ''}>Replied</option>
+              <option value="meeting_scheduled" ${o.status === 'meeting_scheduled' ? 'selected' : ''}>Meeting Scheduled</option>
+              <option value="closed" ${o.status === 'closed' ? 'selected' : ''}>Closed</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label">Subject Line</label>
+          <input type="text" id="modal-edit-subject" class="input-control" value="${escapeHtml(o.subject || '')}">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label">Email Body</label>
+          <textarea id="modal-edit-body" class="input-control" style="min-height: 120px; font-family: inherit; line-height: 1.45;">${escapeHtml(o.body || '')}</textarea>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+          <div class="form-group">
+            <label class="form-label">Next Follow-up Date</label>
+            <input type="date" id="modal-edit-followup" class="input-control" value="${escapeHtml(o.next_followup_date || '')}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Notes</label>
+            <input type="text" id="modal-edit-notes" class="input-control" value="${escapeHtml(o.notes || '')}">
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="modal-edit-cancel">Cancel</button>
+        <button class="btn btn-primary" id="modal-edit-save">Update Outreach</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('modal-edit-cancel').addEventListener('click', () => {
+    modalRoot.style.display = 'none';
+  });
+
+  document.getElementById('modal-edit-save').addEventListener('click', async () => {
+    const contact_name = document.getElementById('modal-edit-name').value.trim();
+    if (!contact_name) {
+      showToast('Contact name is required', '⚠️');
+      return;
+    }
+    const contact_email = document.getElementById('modal-edit-email').value.trim();
+    const organization = document.getElementById('modal-edit-org').value.trim();
+    const role = document.getElementById('modal-edit-role').value.trim();
+    const category = document.getElementById('modal-edit-cat').value;
+    const status = document.getElementById('modal-edit-status').value;
+    const subject = document.getElementById('modal-edit-subject').value.trim();
+    const body = document.getElementById('modal-edit-body').value.trim();
+    const next_followup_date = document.getElementById('modal-edit-followup').value || null;
+    const notes = document.getElementById('modal-edit-notes').value.trim();
+
+    modalRoot.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/outreach/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contact_name,
+          contact_email,
+          organization,
+          role,
+          category,
+          status,
+          subject,
+          body,
+          next_followup_date,
+          notes
+        })
+      });
+
+      if (res.ok) {
+        playChime();
+        showToast('Outreach record updated!', '✓');
+        await fetchState();
+      } else {
+        showToast('Failed to update outreach', '⚠️');
+      }
+    } catch (err) {
+      showToast('Server error updating outreach', '⚠️');
+    }
+  });
+}
+
+function openMarkSentModal(id) {
+  const o = S.outreach.find(r => r.id === id);
+  if (!o) return;
+
+  const modalRoot = document.getElementById('modal-container');
+  modalRoot.style.display = 'flex';
+  modalRoot.className = 'modal-backdrop';
+
+  const defaultFollowup = addDays(4);
+
+  modalRoot.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">✉️ Mark as Sent</div>
+      <div class="modal-body">
+        <p style="color:var(--text-secondary); margin-bottom:14px; font-size:0.88rem;">
+          Confirm sending outreach to <strong>${escapeHtml(o.contact_name)}</strong> (${escapeHtml(o.organization || 'Contact')}). Nudge will schedule automated follow-up reminders.
+        </p>
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Sent Date</label>
+          <input type="date" id="modal-sent-date" class="input-control" value="${todayIST()}">
+        </div>
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Schedule Next Follow-up (Recommended: +4 Days)</label>
+          <div class="preset-chips-row" style="margin-bottom:8px;">
+            <button class="preset-chip selected" data-sent-preset="${addDays(4)}">+4 Days (Recommended)</button>
+            <button class="preset-chip" data-sent-preset="${addDays(7)}">+7 Days</button>
+            <button class="preset-chip" data-sent-preset="${addDays(14)}">+14 Days</button>
+            <button class="preset-chip" data-sent-preset="">No Follow-up</button>
+          </div>
+          <input type="date" id="modal-sent-followup" class="input-control" value="${defaultFollowup}">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="modal-sent-cancel">Cancel</button>
+        <button class="btn btn-primary" id="modal-sent-confirm">Confirm Sent 🚀</button>
+      </div>
+    </div>
+  `;
+
+  modalRoot.querySelectorAll('[data-sent-preset]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      modalRoot.querySelectorAll('[data-sent-preset]').forEach(c => c.classList.remove('selected'));
+      chip.classList.add('selected');
+      const val = chip.dataset.sentPreset;
+      document.getElementById('modal-sent-followup').value = val;
+    });
+  });
+
+  document.getElementById('modal-sent-cancel').addEventListener('click', () => {
+    modalRoot.style.display = 'none';
+  });
+
+  document.getElementById('modal-sent-confirm').addEventListener('click', async () => {
+    const sent_date = document.getElementById('modal-sent-date').value || todayIST();
+    const next_followup_date = document.getElementById('modal-sent-followup').value || null;
+
+    modalRoot.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/outreach/${id}/sent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sent_date, next_followup_date })
+      });
+
+      if (res.ok) {
+        playChime();
+        showToast(`Marked as sent! Follow-up set for ${next_followup_date ? formatDate(next_followup_date) : 'None'}.`, '✓');
+        await fetchState();
+      }
+    } catch (err) {
+      showToast('Error marking outreach as sent', '⚠️');
+    }
+  });
+}
+
+function openScheduleFollowupModal(id) {
+  const o = S.outreach.find(r => r.id === id);
+  if (!o) return;
+
+  const modalRoot = document.getElementById('modal-container');
+  modalRoot.style.display = 'flex';
+  modalRoot.className = 'modal-backdrop';
+
+  const defaultDate = o.next_followup_date || addDays(3);
+
+  modalRoot.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">⏰ Schedule Follow-up</div>
+      <div class="modal-body">
+        <p style="color:var(--text-secondary); margin-bottom:14px; font-size:0.88rem;">
+          Schedule or reschedule follow-up for <strong>${escapeHtml(o.contact_name)}</strong>.
+        </p>
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Next Follow-up Date</label>
+          <div class="preset-chips-row" style="margin-bottom:8px;">
+            <button class="preset-chip" data-followup-preset="${addDays(3)}">+3 Days</button>
+            <button class="preset-chip" data-followup-preset="${addDays(5)}">+5 Days</button>
+            <button class="preset-chip" data-followup-preset="${addDays(7)}">+7 Days</button>
+          </div>
+          <input type="date" id="modal-sched-date" class="input-control" value="${defaultDate}">
+        </div>
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Follow-up Notes / Context</label>
+          <input type="text" id="modal-sched-notes" class="input-control" value="${escapeHtml(o.notes || '')}" placeholder="e.g. Sent 1st follow-up referencing paper">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="modal-sched-cancel">Cancel</button>
+        <button class="btn btn-primary" id="modal-sched-save">Update Follow-up</button>
+      </div>
+    </div>
+  `;
+
+  modalRoot.querySelectorAll('[data-followup-preset]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      modalRoot.querySelectorAll('[data-followup-preset]').forEach(c => c.classList.remove('selected'));
+      chip.classList.add('selected');
+      document.getElementById('modal-sched-date').value = chip.dataset.followupPreset;
+    });
+  });
+
+  document.getElementById('modal-sched-cancel').addEventListener('click', () => {
+    modalRoot.style.display = 'none';
+  });
+
+  document.getElementById('modal-sched-save').addEventListener('click', async () => {
+    const next_followup_date = document.getElementById('modal-sched-date').value;
+    const notes = document.getElementById('modal-sched-notes').value.trim();
+
+    if (!next_followup_date) {
+      showToast('Please select a date', '⚠️');
+      return;
+    }
+
+    modalRoot.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/outreach/${id}/followup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ next_followup_date, notes })
+      });
+
+      if (res.ok) {
+        playChime();
+        showToast(`Follow-up scheduled for ${formatDate(next_followup_date)}!`, '✓');
+        await fetchState();
+      }
+    } catch (err) {
+      showToast('Error scheduling follow-up', '⚠️');
+    }
+  });
+}
+
+function openRecordReplyModal(id) {
+  const o = S.outreach.find(r => r.id === id);
+  if (!o) return;
+
+  const modalRoot = document.getElementById('modal-container');
+  modalRoot.style.display = 'flex';
+  modalRoot.className = 'modal-backdrop';
+
+  modalRoot.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">💬 Record Contact Reply</div>
+      <div class="modal-body">
+        <p style="color:var(--text-secondary); margin-bottom:14px; font-size:0.88rem;">
+          Great news! Recording a reply automatically cancels obsolete follow-up reminders.
+        </p>
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Outcome / Response Type</label>
+          <select id="modal-reply-outcome" class="input-control">
+            <option value="replied">💬 Replied (Interested / Discussion in Progress)</option>
+            <option value="meeting_scheduled">🗓️ Meeting / Interview Scheduled</option>
+            <option value="closed">✕ Closed (Not hiring / Passed)</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Response Date</label>
+          <input type="date" id="modal-reply-date" class="input-control" value="${todayIST()}">
+        </div>
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">Notes (Meeting time, key takeaways, etc.)</label>
+          <textarea id="modal-reply-notes" class="input-control" style="min-height:70px;" placeholder="e.g. Coffee chat scheduled for next Tuesday at 2pm.">${escapeHtml(o.notes || '')}</textarea>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="modal-reply-cancel">Cancel</button>
+        <button class="btn btn-primary" id="modal-reply-confirm">Save Reply 🎉</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('modal-reply-cancel').addEventListener('click', () => {
+    modalRoot.style.display = 'none';
+  });
+
+  document.getElementById('modal-reply-confirm').addEventListener('click', async () => {
+    const outcome = document.getElementById('modal-reply-outcome').value;
+    const response_date = document.getElementById('modal-reply-date').value || todayIST();
+    const notes = document.getElementById('modal-reply-notes').value.trim();
+
+    modalRoot.style.display = 'none';
+
+    try {
+      const res = await fetch(`/api/outreach/${id}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outcome, response_date, notes })
+      });
+
+      if (res.ok) {
+        playChime();
+        showToast('Reply recorded! Reminders updated.', '✓');
+        await fetchState();
+      }
+    } catch (err) {
+      showToast('Error recording reply', '⚠️');
+    }
+  });
+}
+
+function openAIDraftModal() {
+  const modalRoot = document.getElementById('modal-container');
+  modalRoot.style.display = 'flex';
+  modalRoot.className = 'modal-backdrop';
+
+  modalRoot.innerHTML = `
+    <div class="modal-box" style="max-width: 620px;">
+      <div class="modal-title" style="display:flex; align-items:center; gap:8px;">
+        <span>✨</span>
+        <span>Gemma 4 Cold Email Copilot</span>
+      </div>
+      <div class="modal-body" style="max-height: 74vh; overflow-y: auto;">
+        <p style="color:var(--text-secondary); font-size:0.84rem; margin-bottom:14px; line-height:1.4;">
+          Generate authentic, high-converting outreach emails with Gemma 4. 
+          <em style="color:var(--text-main);">Strict accuracy guardrails prevent hallucinated qualifications.</em>
+        </p>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="form-group">
+            <label class="form-label">Outreach Purpose</label>
+            <select id="draft-purpose" class="input-control">
+              <option value="internship">Summer / Fall Internship</option>
+              <option value="research">Undergraduate Research / Lab Intern</option>
+              <option value="referral">Employee Referral Inquiry</option>
+              <option value="networking">Informational Coffee Chat</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tone</label>
+            <select id="draft-tone" class="input-control">
+              <option value="professional">Professional & Courteous</option>
+              <option value="concise">Ultra-Concise (< 100 words)</option>
+              <option value="enthusiastic">Enthusiastic & Driven</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="form-group">
+            <label class="form-label">Recipient Name</label>
+            <input type="text" id="draft-rec-name" class="input-control" placeholder="e.g. Dr. Priya Sharma / Alex Chen">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target Organization</label>
+            <input type="text" id="draft-rec-org" class="input-control" placeholder="e.g. Google DeepMind / Microsoft">
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="form-group">
+            <label class="form-label">Recipient Role</label>
+            <input type="text" id="draft-rec-role" class="input-control" placeholder="e.g. Principal Scientist / SWE Manager">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Specific Opportunity / Context</label>
+            <input type="text" id="draft-rec-opp" class="input-control" placeholder="e.g. Summer 2027 SWE Internship">
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label">Your Background / Focus (Optional)</label>
+          <input type="text" id="draft-user-bg" class="input-control" value="${escapeHtml(S.profile.major ? S.profile.major + ' student' + (S.profile.college ? ' at ' + S.profile.college : '') : '')}" placeholder="e.g. CS Sophomore specializing in AI systems">
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px; display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="draft-is-followup" style="accent-color:var(--primary); width:16px; height:16px;">
+          <label for="draft-is-followup" style="font-size:0.84rem; cursor:pointer; color:var(--text-main);">
+            This is a polite follow-up to an earlier email
+          </label>
+        </div>
+
+        <button class="btn btn-primary" id="btn-generate-draft" style="width:100%; justify-content:center; padding:10px; box-shadow: 0 4px 14px var(--primary-glow);">
+          ⚡ Generate Draft with Gemma 4
+        </button>
+
+        <!-- Live Preview Output Area -->
+        <div id="draft-output-area" style="display:none; margin-top:16px;">
+          <div class="draft-notes-alert" id="draft-notes-alert">
+            ℹ️ <span>Replace [bracketed placeholders] with your actual project details before sending!</span>
+          </div>
+
+          <div class="draft-preview-box">
+            <span class="draft-field-label">Subject Line</span>
+            <input type="text" id="draft-out-subject" class="input-control draft-subject-input">
+
+            <span class="draft-field-label">Email Body</span>
+            <textarea id="draft-out-body" class="input-control draft-body-textarea"></textarea>
+          </div>
+
+          <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">
+            <button class="btn btn-secondary btn-sm" id="btn-draft-copy">📋 Copy Draft</button>
+            <button class="btn btn-primary btn-sm" id="btn-draft-create-outreach">➕ Create Outreach Record</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="border-top:1px solid var(--border-subtle); padding-top:12px;">
+        <button class="btn btn-secondary" id="modal-draft-close">Close</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('modal-draft-close').addEventListener('click', () => {
+    modalRoot.style.display = 'none';
+  });
+
+  const genBtn = document.getElementById('btn-generate-draft');
+  const outputArea = document.getElementById('draft-output-area');
+  const subjInput = document.getElementById('draft-out-subject');
+  const bodyTextarea = document.getElementById('draft-out-body');
+
+  let currentDraftData = null;
+
+  genBtn.addEventListener('click', async () => {
+    const purpose = document.getElementById('draft-purpose').value;
+    const tone = document.getElementById('draft-tone').value;
+    const recipient_name = document.getElementById('draft-rec-name').value.trim();
+    const recipient_org = document.getElementById('draft-rec-org').value.trim();
+    const recipient_role = document.getElementById('draft-rec-role').value.trim();
+    const opportunity_details = document.getElementById('draft-rec-opp').value.trim();
+    const user_background = document.getElementById('draft-user-bg').value.trim();
+    const is_followup = document.getElementById('draft-is-followup').checked;
+
+    genBtn.disabled = true;
+    genBtn.textContent = 'Generating with Gemma 4...';
+
+    try {
+      const res = await fetch('/api/outreach/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          purpose,
+          tone,
+          recipient_name,
+          recipient_org,
+          recipient_role,
+          opportunity_details,
+          user_background,
+          is_followup
+        })
+      });
+
+      if (!res.ok) throw new Error('Draft API error');
+      const data = await res.json();
+
+      currentDraftData = {
+        contact_name: recipient_name || 'Hiring Lead',
+        organization: recipient_org,
+        role: recipient_role,
+        category: purpose === 'research' ? 'research' : (purpose === 'referral' ? 'referral' : 'internship'),
+        subject: data.subject || '',
+        body: data.body || '',
+        notes: data.notes || ''
+      };
+
+      subjInput.value = data.subject || '';
+      bodyTextarea.value = data.body || '';
+      outputArea.style.display = 'block';
+
+      playChime();
+      showToast('Gemma 4 generated your draft! ✨', '✓');
+    } catch (err) {
+      showToast('Could not generate draft', '⚠️');
+    } finally {
+      genBtn.disabled = false;
+      genBtn.textContent = '⚡ Re-generate with Gemma 4';
+    }
+  });
+
+  document.getElementById('btn-draft-copy')?.addEventListener('click', () => {
+    const textToCopy = `Subject: ${subjInput.value}\n\n${bodyTextarea.value}`.trim();
+    navigator.clipboard.writeText(textToCopy);
+    playChime();
+    showToast('Draft copied to clipboard! 📋', '✓');
+  });
+
+  document.getElementById('btn-draft-create-outreach')?.addEventListener('click', () => {
+    if (!currentDraftData) return;
+    currentDraftData.subject = subjInput.value;
+    currentDraftData.body = bodyTextarea.value;
+    modalRoot.style.display = 'none';
+    openAddOutreachModal(currentDraftData);
+  });
+}
+
+/* ==========================================================================
    VIEW 3: Reports & Performance Assessment View
    ========================================================================== */
 function renderReportsView() {
@@ -1398,8 +2714,12 @@ function setupReportsListeners() {
    ========================================================================== */
 function renderTasksView() {
   const tasksHtml = S.tasks.length === 0 ? `
-    <div style="text-align:center; padding:36px; color:var(--text-muted); background:var(--bg-card); border-radius:var(--radius-md);">
-      No tasks yet! Add one below to stay ahead of deadlines.
+    <div class="outreach-empty-state" style="margin:20px 0;">
+      <div class="empty-icon" style="font-size:2.2rem; margin-bottom:4px;">✓</div>
+      <h3 style="font-size:1.05rem; font-weight:600; color:var(--text-main); margin-bottom:4px;">All tasks completed</h3>
+      <p style="color:var(--text-secondary); max-width:440px; font-size:0.86rem; line-height:1.5;">
+        No pending action items right now. Add a task below or ask Copilot to extract tasks from your syllabus or job postings.
+      </p>
     </div>
   ` : S.tasks.map(t => {
     const isDue = t.deadline ? countdownText(t.deadline) : '';
@@ -1478,8 +2798,13 @@ function setupTasksListeners() {
    ========================================================================== */
 function renderEventsView() {
   const eventsHtml = S.events.length === 0 ? `
-    <div style="text-align:center; padding:36px; color:var(--text-muted); background:var(--bg-card); border-radius:var(--radius-md);">
-      No scheduled events or interviews recorded yet.
+    <div class="outreach-empty-state" style="margin:20px 0;">
+      <div class="empty-icon" style="font-size:2.2rem; margin-bottom:4px;">🗓️</div>
+      <h3 style="font-size:1.05rem; font-weight:600; color:var(--text-main); margin-bottom:4px;">No upcoming events scheduled</h3>
+      <p style="color:var(--text-secondary); max-width:440px; font-size:0.86rem; line-height:1.5;">
+        Track hackathons, workshops, and interview rounds. Copilot automatically coordinates reminders leading up to each event.
+      </p>
+      <button class="btn btn-primary btn-sm" id="btn-empty-add-event" style="margin-top:8px;">+ Schedule an event</button>
     </div>
   ` : S.events.map(e => {
     const countdown = countdownText(e.date);
@@ -1511,6 +2836,11 @@ function setupEventsListeners() {
   const addBtn = document.getElementById('btn-add-event-modal');
   if (addBtn) {
     addBtn.addEventListener('click', openAddEventModal);
+  }
+
+  const emptyAddBtn = document.getElementById('btn-empty-add-event');
+  if (emptyAddBtn) {
+    emptyAddBtn.addEventListener('click', openAddEventModal);
   }
 
   document.querySelectorAll('[data-action="delete-event"]').forEach(btn => {
@@ -1784,10 +3114,12 @@ function renderDueSoonView() {
   soonItems.sort((a, b) => a.diff - b.diff);
 
   const itemsHtml = soonItems.length === 0 ? `
-    <div style="text-align:center; padding:48px; color:var(--text-muted); background:var(--bg-card); border-radius:var(--radius-lg);">
-      <div style="font-size:2rem; margin-bottom:8px;">✨</div>
-      <h3>You are all caught up!</h3>
-      <p style="font-size:0.88rem; margin-top:4px;">No deadlines pending in the next 7 days.</p>
+    <div class="outreach-empty-state" style="margin:20px 0;">
+      <div class="empty-icon" style="font-size:2.2rem; margin-bottom:4px;">⏳</div>
+      <h3 style="font-size:1.05rem; font-weight:600; color:var(--text-main); margin-bottom:4px;">You are all caught up</h3>
+      <p style="color:var(--text-secondary); max-width:440px; font-size:0.86rem; line-height:1.5;">
+        No immediate deadlines due in the next 7 days. Your upcoming applications and tasks are safely scheduled ahead.
+      </p>
     </div>
   ` : soonItems.map(item => {
     const isOverdue = item.diff < 0;
@@ -2617,7 +3949,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Check URL query parameters (e.g. ?v=opps from notification click)
   const urlParams = new URLSearchParams(window.location.search);
   const initialView = urlParams.get('v');
-  if (initialView && ['chat', 'opps', 'reports', 'tasks', 'events', 'cal', 'soon', 'set'].includes(initialView)) {
+  if (initialView && ['chat', 'opps', 'outreach', 'reports', 'tasks', 'events', 'cal', 'soon', 'set'].includes(initialView)) {
     S.view = initialView;
   }
 
@@ -2625,6 +3957,38 @@ window.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('sidebar-tour-btn')?.addEventListener('click', (e) => {
     e.preventDefault();
     startInteractiveTour();
+  });
+
+  // Main Navigation Sidebar toggle controller (reserves space for chat / active view)
+  const toggleSidebar = (force = null) => {
+    const sidebar = document.getElementById('sidebar');
+    const toggleBtn = document.getElementById('btn-toggle-main-sidebar');
+    if (!sidebar) return;
+    const isCollapsed = force !== null ? force : !sidebar.classList.contains('collapsed');
+    sidebar.classList.toggle('collapsed', isCollapsed);
+    if (toggleBtn) {
+      toggleBtn.classList.toggle('active', isCollapsed);
+      toggleBtn.title = isCollapsed ? 'Expand Navigation Sidebar' : 'Collapse Navigation Sidebar (Reserve space for Chat)';
+    }
+    localStorage.setItem('nudge_sidebar_collapsed', isCollapsed ? 'true' : 'false');
+  };
+
+  // Restore saved sidebar collapsed state on startup
+  const savedSidebarCollapsed = localStorage.getItem('nudge_sidebar_collapsed') === 'true';
+  if (savedSidebarCollapsed) {
+    toggleSidebar(true);
+  }
+
+  // Toggle buttons
+  document.getElementById('btn-toggle-main-sidebar')?.addEventListener('click', () => toggleSidebar());
+  document.getElementById('btn-collapse-sidebar')?.addEventListener('click', () => toggleSidebar());
+
+  // Global Ctrl+B shortcut to toggle sidebar
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'b' || e.key === 'B')) {
+      e.preventDefault();
+      toggleSidebar();
+    }
   });
 
   // Register service worker silently for push notifications

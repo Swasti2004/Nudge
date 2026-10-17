@@ -6,9 +6,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test tests/gemma-copilot.test.js tests/guest-isolation.test.js",
+    "test:isolation": "node --test tests/guest-isolation.test.js",
+    "verify:gemma": "node test-gemma.js"
   },
   "dependencies": {
+    "@google/genai": "^2.30.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "node-cron": "^3.0.3",
