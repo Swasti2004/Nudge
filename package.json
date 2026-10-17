@@ -1,0 +1,19 @@
+{
+  "name": "nudge-copilot",
+  "version": "1.0.0",
+  "description": "Nudge - AI-Powered Student Deadline & Opportunity Copilot",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "tesseract.js": "^5.1.1",
+    "web-push": "^3.6.7",
+    "xlsx": "^0.18.5"
+  }
+}
