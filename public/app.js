@@ -437,6 +437,8 @@ function renderChatView() {
       actionsHtml = renderDeadlineCard(actionsObj.item, m.id, isConfirmed);
     } else if (actionsObj && actionsObj.type === 'duplicate_verify') {
       actionsHtml = renderDuplicateCard(actionsObj, m.id, isConfirmed);
+    } else if (actionsObj && actionsObj.type === 'discovery_results') {
+      actionsHtml = renderDiscoveryResults(actionsObj, m.id);
     }
 
     const formattedText = renderMarkdown(m.text);
@@ -587,7 +589,10 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
   let opt1Header = 'Option 1: Extracted Deadline';
   let opt1BtnText = `✓ Accept Extracted Deadline (${formatDate(suggested)})`;
 
-  if (item.evidence === 'image') {
+  if (item.evidence === 'tinyfish') {
+    opt1Header = '🐟 Option 1: Extracted via TinyFish Rendered Page';
+    opt1BtnText = `✓ Accept Extracted Deadline (${formatDate(suggested)})`;
+  } else if (item.evidence === 'image') {
     opt1Header = '📸 Option 1: Extracted Directly from Poster / Photo';
     opt1BtnText = `✓ Accept Poster Deadline (${formatDate(suggested)})`;
   } else if (item.evidence === 'page') {
@@ -601,23 +606,30 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
     opt1BtnText = `✓ Accept Suggested 3-Day Deadline (${formatDate(suggested)})`;
   }
 
+  const extraMetaHtml = `
+    ${item.event_date ? `<div style="font-size:0.8rem; color:var(--text-secondary); margin-top:2px;">🗓️ Event Date: <strong>${formatDate(item.event_date)}</strong></div>` : ''}
+    ${item.eligibility ? `<div style="font-size:0.8rem; color:var(--text-secondary); margin-top:2px;">🎓 Eligibility: <span>${escapeHtml(item.eligibility)}</span></div>` : ''}
+    ${item.application_url ? `<div style="font-size:0.8rem; margin-top:2px;"><a href="${escapeHtml(item.application_url)}" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:none;">🔗 Official Portal Link</a></div>` : ''}
+  `;
+
   return `
     <div class="action-card deadline-card" data-msg-id="${msgId}">
       <div class="card-header-badge">⚡ Interactive Confirmation</div>
       <div class="card-title">${escapeHtml(item.title)}</div>
       <div class="card-subtitle">${item.org ? `Organization: <strong>${escapeHtml(item.org)}</strong> • ` : ''}Category: <span class="badge badge-${item.category}">${item.category}</span></div>
+      ${extraMetaHtml}
 
       <!-- Horizontal 2-Option Confirmation Grid -->
       <div class="deadline-options-row">
         <!-- Option 1: Auto-suggested 1-click -->
         <div class="option-block option-suggested">
-          <div class="option-header" style="${item.evidence === 'image' || item.evidence === 'page' ? 'color:var(--success);' : ''}">${opt1Header}</div>
+          <div class="option-header" style="${item.evidence === 'tinyfish' || item.evidence === 'image' || item.evidence === 'page' ? 'color:var(--success);' : ''}">${opt1Header}</div>
           <div class="option-date-display">
             <span class="date-large">${formatDate(suggested)}</span>
             <span class="countdown-pill ${daysUntil(suggested) <= 3 ? 'urgent' : ''}">${countdown}</span>
           </div>
           <div class="option-hint-text">
-            ${item.evidence === 'image' ? '📸 Directly recognized from uploaded flyer/screenshot' : (item.evidence === 'page' ? '🔗 Directly extracted from website page' : (hasExplicitDate ? '✍️ Explicitly extracted from message' : '⚡ 3-day reminder default'))}
+            ${item.evidence === 'tinyfish' ? '🐟 Verified & extracted from JavaScript rendered webpage by TinyFish' : (item.evidence === 'image' ? '📸 Directly recognized from uploaded flyer/screenshot' : (item.evidence === 'page' ? '🔗 Directly extracted from website page' : (hasExplicitDate ? '✍️ Explicitly extracted from message' : '⚡ 3-day reminder default')))}
           </div>
           <div class="option-action-footer">
             <button class="btn btn-primary btn-md" style="width:100%;"
@@ -627,7 +639,8 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
               data-cat="${item.category || 'other'}"
               data-deadline="${suggested}"
               data-loc="${escapeHtml(item.location || '')}"
-              data-url="${escapeHtml(item.url || '')}">
+              data-url="${escapeHtml(item.url || item.application_url || '')}"
+              data-eligibility="${escapeHtml(item.eligibility || '')}">
               ${opt1BtnText}
             </button>
           </div>
@@ -722,6 +735,50 @@ function renderDuplicateCard(dupObj, msgId, isConfirmed = false) {
           data-act="dup_cancel">
           Keep Existing
         </button>
+      </div>
+    </div>
+  `;
+}
+
+function renderDiscoveryResults(actionsObj, msgId) {
+  const items = actionsObj.items || [];
+  if (items.length === 0) return '';
+
+  const cardsHtml = items.map((it, idx) => {
+    const hasDate = !!it.deadline;
+    return `
+      <div class="discovery-card" data-disc-idx="${idx}">
+        <div class="discovery-card-top">
+          <span class="badge badge-${escapeHtml(it.category || 'internship')}">${escapeHtml(it.category || 'internship')}</span>
+          ${it.site_name ? `<span class="badge badge-other">${escapeHtml(it.site_name)}</span>` : ''}
+        </div>
+        <div class="discovery-card-title">${escapeHtml(it.title)}</div>
+        ${it.org ? `<div class="discovery-card-org">🏢 ${escapeHtml(it.org)}</div>` : ''}
+        <div class="discovery-card-deadline">
+          📅 ${hasDate ? `Deadline: <strong>${formatDate(it.deadline)}</strong> <span class="countdown-pill">${countdownText(it.deadline)}</span>` : `<span style="color:var(--text-muted);">No deadline stated</span>`}
+        </div>
+        ${it.snippet ? `<div class="discovery-card-snippet">${escapeHtml(it.snippet)}</div>` : ''}
+        <div class="discovery-card-actions">
+          ${it.url ? `<a href="${escapeHtml(it.url)}" target="_blank" rel="noopener" class="btn-text btn-xs">🔗 Source</a>` : ''}
+          <button class="btn btn-primary btn-sm"
+            data-act="track_discovered"
+            data-title="${escapeHtml(it.title)}"
+            data-org="${escapeHtml(it.org || '')}"
+            data-cat="${escapeHtml(it.category || 'internship')}"
+            data-deadline="${escapeHtml(it.deadline || '')}"
+            data-url="${escapeHtml(it.url || '')}">
+            + Track Opportunity
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="action-card discovery-results-card" data-msg-id="${msgId}">
+      <div class="card-header-badge">🐟 TinyFish Search Discovery (${items.length} opportunities)</div>
+      <div class="discovery-cards-grid">
+        ${cardsHtml}
       </div>
     </div>
   `;
@@ -1179,7 +1236,8 @@ function setupChatListeners() {
           category: target.dataset.cat,
           deadline: target.dataset.deadline,
           location: target.dataset.loc,
-          url: target.dataset.url
+          url: target.dataset.url,
+          eligibility: target.dataset.eligibility || null
         };
         await executeCardAction('accept_suggested', payload, msgId);
       }
@@ -1195,9 +1253,21 @@ function setupChatListeners() {
           category: target.dataset.cat,
           deadline: customDate,
           location: target.dataset.loc,
-          url: target.dataset.url
+          url: target.dataset.url,
+          eligibility: target.dataset.eligibility || null
         };
         await executeCardAction('set_manual', payload, msgId);
+      }
+
+      else if (act === 'track_discovered') {
+        const payload = {
+          title: target.dataset.title,
+          org: target.dataset.org,
+          category: target.dataset.cat,
+          deadline: target.dataset.deadline || null,
+          url: target.dataset.url || null
+        };
+        await executeCardAction('track_discovered', payload, msgId);
       }
 
       else if (act === 'dup_update') {
@@ -1374,13 +1444,37 @@ function renderOpportunitiesView() {
     const countdown = countdownText(o.deadline);
     const diff = daysUntil(o.deadline);
     const isUrgent = diff !== null && diff <= 3 && diff >= 0;
+    const hasChange = o.deadline_change_detected === 1 && o.detected_deadline;
 
     return `
-      <div class="opp-card" data-opp-id="${o.id}">
+      <div class="opp-card ${hasChange ? 'opp-card-has-change' : ''}" data-opp-id="${o.id}">
+        ${hasChange ? `
+          <div class="deadline-change-banner">
+            <div class="dcb-title-row">
+              <span class="dcb-icon">⚠️</span>
+              <strong>Official deadline change detected</strong>
+            </div>
+            <div class="dcb-dates">
+              <span>Saved: <del>${formatDate(o.deadline)}</del></span>
+              <span>→ Detected: <strong style="color:var(--primary);">${formatDate(o.detected_deadline)}</strong></span>
+            </div>
+            ${o.detected_change_note ? `<div class="dcb-note">${escapeHtml(o.detected_change_note)}</div>` : ''}
+            <div class="dcb-buttons">
+              <button class="btn btn-primary btn-xs" data-action="accept-deadline-change" data-opp-id="${o.id}">
+                Update to ${formatDate(o.detected_deadline)}
+              </button>
+              <button class="btn btn-secondary btn-xs" data-action="dismiss-deadline-change" data-opp-id="${o.id}">
+                Keep Saved
+              </button>
+            </div>
+          </div>
+        ` : ''}
+
         <div class="opp-card-top">
           <div class="opp-badges">
             <span class="badge badge-${o.category || 'other'}">${o.category || 'other'}</span>
             ${o.location ? `<span class="badge badge-other">📍 ${escapeHtml(o.location)}</span>` : ''}
+            ${o.last_monitored_at ? `<span class="badge badge-other" title="Live monitored via TinyFish">🐟 Monitored</span>` : ''}
           </div>
           <button class="status-badge status-${o.status}" data-action="open-status-modal" data-opp-id="${o.id}" title="Click to change status">
             ${o.status === 'applied' ? '✓' : o.status === 'rejected' ? '✕' : '⏳'} ${o.status}
@@ -1389,19 +1483,23 @@ function renderOpportunitiesView() {
 
         <div class="opp-title">${escapeHtml(o.title)}</div>
         <div class="opp-org">🏢 ${escapeHtml(o.org || 'Organization not specified')}</div>
+        ${o.eligibility ? `<div class="opp-eligibility" style="font-size:0.78rem; color:var(--text-secondary); margin-top:4px;">🎓 ${escapeHtml(o.eligibility)}</div>` : ''}
 
         <div class="opp-meta">
           <div class="opp-deadline-row">
             <span>Deadline: <span class="opp-deadline-date">${formatDate(o.deadline)}</span></span>
             <span class="countdown-pill ${isUrgent ? 'urgent' : ''}">${countdown}</span>
           </div>
-          ${o.url ? `
-            <div style="margin-top: 6px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; flex-wrap:wrap; gap:6px;">
+            ${o.url ? `
               <a href="${o.url}" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:none; font-size:0.78rem; display:inline-flex; align-items:center; gap:4px;">
                 🔗 View Portal Listing
               </a>
-            </div>
-          ` : ''}
+              <button class="btn btn-secondary btn-xs btn-check-live" data-action="check-live-deadline" data-opp-id="${o.id}" title="Re-fetch official page via TinyFish to check for changes">
+                🐟 Check Live Page
+              </button>
+            ` : '<span></span>'}
+          </div>
           <div style="display:flex; justify-content:flex-end; gap:6px; margin-top:8px;">
             <button class="btn btn-secondary btn-sm" data-action="delete-opp" data-opp-id="${o.id}">Delete</button>
           </div>
@@ -1418,7 +1516,10 @@ function renderOpportunitiesView() {
         <button class="tab-btn ${S.filterStatus === 'applied' ? 'active' : ''}" data-filter="applied">Applied (${S.opps.filter(o => o.status === 'applied').length})</button>
         <button class="tab-btn ${S.filterStatus === 'rejected' ? 'active' : ''}" data-filter="rejected">Rejected (${S.opps.filter(o => o.status === 'rejected').length})</button>
       </div>
-      <div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button class="btn btn-secondary btn-sm" id="btn-discover-opps" style="display:inline-flex; align-items:center; gap:5px;">
+          <span>🐟 Discover with TinyFish</span>
+        </button>
         <button class="btn btn-danger btn-sm" id="btn-clear-all-opps">Clear All</button>
       </div>
     </div>
@@ -1478,6 +1579,184 @@ function setupOpportunitiesListeners() {
       }
     });
   });
+
+  // Accept detected deadline change
+  document.querySelectorAll('[data-action="accept-deadline-change"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const oppId = parseInt(btn.dataset.oppId, 10);
+      try {
+        const res = await fetch(`/api/opportunities/${oppId}/accept-deadline-change`, { method: 'POST' });
+        if (!res.ok) throw new Error('Could not accept deadline change');
+        playChime();
+        showToast('Deadline updated & reminders rescheduled!', '✓');
+        await fetchState();
+      } catch (err) {
+        showToast('Failed to update deadline', '⚠️');
+      }
+    });
+  });
+
+  // Dismiss detected deadline change
+  document.querySelectorAll('[data-action="dismiss-deadline-change"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const oppId = parseInt(btn.dataset.oppId, 10);
+      try {
+        const res = await fetch(`/api/opportunities/${oppId}/dismiss-deadline-change`, { method: 'POST' });
+        if (!res.ok) throw new Error('Could not dismiss deadline change');
+        showToast('Kept your confirmed deadline intact', '✓');
+        await fetchState();
+      } catch (err) {
+        showToast('Failed to dismiss alert', '⚠️');
+      }
+    });
+  });
+
+  // Live Check with TinyFish
+  document.querySelectorAll('[data-action="check-live-deadline"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const oppId = parseInt(btn.dataset.oppId, 10);
+      btn.disabled = true;
+      btn.textContent = '🐟 Checking...';
+      try {
+        const res = await fetch(`/api/opportunities/${oppId}/check-deadline`, { method: 'POST' });
+        const data = await res.json();
+        if (data.result && data.result.isChanged) {
+          playChime();
+          showToast(`Change detected: ${data.result.changeNote}`, '⚠️');
+        } else {
+          showToast('Live check complete: Deadline matches official page!', '✓');
+        }
+        await fetchState();
+      } catch (err) {
+        showToast('Could not reach page for live check', '⚠️');
+        btn.disabled = false;
+        btn.textContent = '🐟 Check Live Page';
+      }
+    });
+  });
+
+  // Discover with TinyFish modal trigger
+  const discBtn = document.getElementById('btn-discover-opps');
+  if (discBtn) {
+    discBtn.addEventListener('click', openDiscoveryModal);
+  }
+}
+
+/**
+ * TinyFish Opportunity Discovery Modal
+ */
+function openDiscoveryModal() {
+  const modalRoot = document.getElementById('modal-container');
+  modalRoot.style.display = 'flex';
+  modalRoot.className = 'modal-backdrop';
+
+  modalRoot.innerHTML = `
+    <div class="modal-box discovery-modal-box" style="max-width: 640px; width: 92%;">
+      <div class="modal-title" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>🐟 Discover Opportunities with TinyFish</span>
+        <button class="btn-ghost-sm" id="btn-close-disc-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.86rem; color:var(--text-secondary); margin-bottom:12px;">
+          Search live web listings for internships, hackathons, and scholarships structured by Gemma 4.
+        </p>
+        <div style="display:flex; gap:8px; margin-bottom:16px;">
+          <input type="text" class="input-control" id="disc-search-input" placeholder="e.g. Summer 2027 SWE Internships, AI Hackathons..." value="Software Engineering Internships 2027">
+          <button class="btn btn-primary" id="btn-exec-disc-search" style="white-space:nowrap;">🔍 Search</button>
+        </div>
+        <div id="disc-results-box" style="max-height:360px; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
+          <div style="font-size:0.84rem; color:var(--text-muted); text-align:center; padding:20px;">
+            Click <strong>Search</strong> to discover live opportunities.
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('btn-close-disc-modal').onclick = () => {
+    modalRoot.style.display = 'none';
+  };
+
+  const execSearch = async () => {
+    const q = document.getElementById('disc-search-input').value.trim();
+    if (!q) return;
+
+    const resultsBox = document.getElementById('disc-results-box');
+    resultsBox.innerHTML = `
+      <div style="text-align:center; padding:30px; color:var(--text-secondary);">
+        <span class="spinner-dot" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--primary); animation:pulse 1s infinite alternate;"></span>
+        <span style="margin-left:8px;">Searching live listings via TinyFish & structuring with Gemma 4...</span>
+      </div>
+    `;
+
+    try {
+      const res = await fetch(`/api/opportunities/discover?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      const items = data.items || [];
+
+      if (items.length === 0) {
+        resultsBox.innerHTML = `<div style="text-align:center; padding:20px; color:var(--text-muted);">No opportunities found for "${escapeHtml(q)}". Try broader search terms.</div>`;
+        return;
+      }
+
+      resultsBox.innerHTML = items.map((it, idx) => `
+        <div class="discovery-card" style="margin-bottom:0;">
+          <div class="discovery-card-top">
+            <span class="badge badge-${escapeHtml(it.category || 'internship')}">${escapeHtml(it.category || 'internship')}</span>
+            ${it.site_name ? `<span class="badge badge-other">${escapeHtml(it.site_name)}</span>` : ''}
+          </div>
+          <div class="discovery-card-title">${escapeHtml(it.title)}</div>
+          ${it.org ? `<div class="discovery-card-org">🏢 ${escapeHtml(it.org)}</div>` : ''}
+          <div class="discovery-card-deadline">
+            📅 ${it.deadline ? `Deadline: <strong>${formatDate(it.deadline)}</strong> (${countdownText(it.deadline)})` : `<span style="color:var(--text-muted);">No deadline stated</span>`}
+          </div>
+          ${it.snippet ? `<div class="discovery-card-snippet">${escapeHtml(it.snippet)}</div>` : ''}
+          <div class="discovery-card-actions">
+            ${it.url ? `<a href="${escapeHtml(it.url)}" target="_blank" rel="noopener" class="btn-text btn-xs">🔗 Official Link</a>` : ''}
+            <button class="btn btn-primary btn-sm btn-disc-track-modal"
+              data-title="${escapeHtml(it.title)}"
+              data-org="${escapeHtml(it.org || '')}"
+              data-cat="${escapeHtml(it.category || 'internship')}"
+              data-deadline="${escapeHtml(it.deadline || '')}"
+              data-url="${escapeHtml(it.url || '')}">
+              + Track Opportunity
+            </button>
+          </div>
+        </div>
+      `).join('');
+
+      // Wire up Track buttons
+      resultsBox.querySelectorAll('.btn-disc-track-modal').forEach(trackBtn => {
+        trackBtn.addEventListener('click', async () => {
+          trackBtn.disabled = true;
+          trackBtn.textContent = 'Saved ✓';
+          const payload = {
+            title: trackBtn.dataset.title,
+            org: trackBtn.dataset.org || null,
+            category: trackBtn.dataset.cat || 'internship',
+            deadline: trackBtn.dataset.deadline || null,
+            url: trackBtn.dataset.url || null
+          };
+          await fetch('/api/opportunities', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          playChime();
+          showToast(`Tracked: ${payload.title}!`, '✓');
+          await fetchState();
+        });
+      });
+
+    } catch (err) {
+      resultsBox.innerHTML = `<div style="text-align:center; padding:20px; color:var(--danger);">Discovery search failed: ${escapeHtml(err.message)}</div>`;
+    }
+  };
+
+  document.getElementById('btn-exec-disc-search').onclick = execSearch;
+  document.getElementById('disc-search-input').onkeydown = (e) => {
+    if (e.key === 'Enter') execSearch();
+  };
 }
 
 function openStatusChangeModal(oppId) {

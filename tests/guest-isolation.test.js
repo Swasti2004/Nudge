@@ -66,9 +66,9 @@ describe('Multi-tenant Anonymous Guest Isolation & Security Test Suite', () => {
   let serverPort = null;
 
   before(async () => {
-    // Start test server on random high port
+    // Start test server on safe port
     await new Promise((resolve) => {
-      serverInstance = app.listen(0, '127.0.0.1', () => {
+      serverInstance = app.listen(3099, '127.0.0.1', () => {
         serverPort = serverInstance.address().port;
         resolve();
       });

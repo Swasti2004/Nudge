@@ -57,12 +57,16 @@ import {
   getOutreachMetrics,
   getFullState,
   resetDatabase,
-  seedDatabase
+  seedDatabase,
+  acceptDeadlineChange,
+  dismissDeadlineChange,
+  recordDeadlineMonitoringResult
 } from './db.js';
 
-import { processUserInput, generateColdEmailDraft } from './ai.js';
+import { processUserInput, generateColdEmailDraft, structureDiscoveredOpportunities } from './ai.js';
 import { todayIST, formatDateIST, daysUntil, countdownText, addDays } from './dates.js';
-import { vapidKeys, startScheduler, sendPushToGuest, sendPushToAll } from './scheduler.js';
+import { vapidKeys, startScheduler, sendPushToGuest, sendPushToAll, checkOpportunityDeadline } from './scheduler.js';
+import { searchWithTinyFish } from './tinyfish.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -481,7 +485,40 @@ app.post('/api/chat', rateLimit(30, 60000), async (req, res) => {
       });
     }
 
-    // Handle Intent 6: save_opportunity or extracted opportunity items
+    // Handle Intent 6: discover_opportunities
+    if (intent === 'discover_opportunities' && items.length > 0) {
+      const actions = {
+        type: 'discovery_results',
+        query: aiResult.query || 'student opportunities',
+        items: items
+      };
+
+      let reply = `🔍 **Discovered Opportunities for "${aiResult.query || 'student opportunities'}":**\n\n`;
+      items.slice(0, 5).forEach((it, idx) => {
+        reply += `${idx + 1}. **${it.title}** ${it.org ? `(${it.org})` : ''}\n`;
+        if (it.deadline) {
+          reply += `   📅 Deadline: **${formatDateIST(it.deadline)}** *(${countdownText(it.deadline)})*\n`;
+        }
+        if (it.snippet) {
+          reply += `   💡 _${it.snippet.slice(0, 140)}..._\n`;
+        }
+        if (it.url) {
+          reply += `   🔗 [Official Page](${it.url})\n`;
+        }
+        reply += `\n`;
+      });
+      reply += `Select any opportunity below to review and track with 1-click confirmation:`;
+
+      addMessage(conversation_id, 'bot', reply, actions, null, req.guestId);
+      return res.json({
+        role: 'bot',
+        text: reply,
+        actions,
+        state: getFullState(req.guestId)
+      });
+    }
+
+    // Handle Intent 7: save_opportunity or extracted opportunity items
     if (items.length > 0) {
       const item = items[0];
 
@@ -503,7 +540,9 @@ app.post('/api/chat', rateLimit(30, 60000), async (req, res) => {
             category: item.category || duplicate.category,
             deadline: item.deadline || duplicate.deadline,
             location: item.location,
-            url: item.url
+            url: item.url,
+            eligibility: item.eligibility || null,
+            application_url: item.application_url || null
           }
         };
 
@@ -532,6 +571,9 @@ app.post('/api/chat', rateLimit(30, 60000), async (req, res) => {
           deadline: suggestedDate,
           suggested_deadline: suggestedDate,
           has_explicit_date: hasExplicitDate,
+          event_date: item.event_date || null,
+          eligibility: item.eligibility || null,
+          application_url: item.application_url || item.url || null,
           evidence: item.evidence || 'none',
           location: item.location,
           url: item.url
@@ -539,19 +581,32 @@ app.post('/api/chat', rateLimit(30, 60000), async (req, res) => {
       };
 
       let sourceLabel = '';
-      if (item.evidence === 'image') sourceLabel = 'extracted directly from your uploaded poster/photo';
+      if (item.evidence === 'tinyfish') sourceLabel = 'rendered via TinyFish web browser agent';
+      else if (item.evidence === 'image') sourceLabel = 'extracted directly from your uploaded poster/photo';
       else if (item.evidence === 'page') sourceLabel = 'extracted directly from the website listing';
       else if (item.evidence === 'text' && hasExplicitDate) sourceLabel = 'extracted from your message';
 
       let reply = '';
       if (hasExplicitDate) {
         reply = `🎯 I captured **${item.title}**${item.org ? ` from **${item.org}**` : ''}!\n` +
-          `📅 **Deadline (${sourceLabel}):** **${formatDateIST(suggestedDate)}** *(${countdown})*.\n\n` +
-          `Please confirm with 1-click or override with a custom date below:`;
+          `📅 **Deadline (${sourceLabel}):** **${formatDateIST(suggestedDate)}** *(${countdown})*.\n`;
+        if (item.event_date) {
+          reply += `🗓️ **Event Date:** **${formatDateIST(item.event_date)}**\n`;
+        }
+        if (item.eligibility) {
+          reply += `🎓 **Eligibility:** ${item.eligibility}\n`;
+        }
+        reply += `\nPlease confirm with 1-click or override with a custom date below:`;
       } else {
         reply = `🎯 I captured **${item.title}**${item.org ? ` from **${item.org}**` : ''}!\n` +
-          `ℹ️ *No deadline was explicitly stated in the source.* Pre-filled suggested deadline (+3 days): **${formatDateIST(suggestedDate)}** *(${countdown})*.\n\n` +
-          `Please confirm or choose the exact date below:`;
+          `ℹ️ *No deadline was explicitly stated in the source.* Pre-filled suggested deadline (+3 days): **${formatDateIST(suggestedDate)}** *(${countdown})*.\n`;
+        if (item.event_date) {
+          reply += `🗓️ **Event Date:** **${formatDateIST(item.event_date)}**\n`;
+        }
+        if (item.eligibility) {
+          reply += `🎓 **Eligibility:** ${item.eligibility}\n`;
+        }
+        reply += `\nPlease confirm or choose the exact date below:`;
       }
 
       addMessage(conversation_id, 'bot', reply, actions, null, req.guestId);
@@ -637,6 +692,8 @@ app.post('/api/action', (req, res) => {
         deadline: payload.deadline,
         location: payload.location || null,
         url: payload.url || null,
+        eligibility: payload.eligibility || null,
+        application_url: payload.application_url || null,
         status: 'pending'
       }, req.guestId);
 
@@ -653,12 +710,54 @@ app.post('/api/action', (req, res) => {
         deadline: payload.deadline,
         location: payload.location || null,
         url: payload.url || null,
+        eligibility: payload.eligibility || null,
+        application_url: payload.application_url || null,
         status: 'pending'
       }, req.guestId);
 
       scheduleOppReminders(oppId, payload.deadline, 3, req.guestId);
       updatedItem = getOpportunityById(oppId, req.guestId);
       botReply = `✅ Saved **${payload.title}** with custom deadline **${formatDateIST(payload.deadline)}** (${countdownText(payload.deadline)}). We will nudge you before it's due! 🚀`;
+    }
+
+    else if (action === 'track_discovered') {
+      // User selected a discovered opportunity; render deadline confirmation card before saving
+      const item = payload;
+      const hasExplicitDate = !!item.deadline;
+      const suggestedDate = item.deadline || addDays(3);
+      const countdown = countdownText(suggestedDate);
+
+      const cardActions = {
+        type: 'deadline_card',
+        item: {
+          title: item.title,
+          org: item.org || null,
+          category: item.category || 'internship',
+          deadline: suggestedDate,
+          suggested_deadline: suggestedDate,
+          has_explicit_date: hasExplicitDate,
+          evidence: 'tinyfish',
+          location: item.location || null,
+          url: item.url || null,
+          eligibility: item.eligibility || null,
+          application_url: item.url || null
+        }
+      };
+
+      botReply = `🎯 Let's track **${item.title}**${item.org ? ` from **${item.org}**` : ''}!\n` +
+        `📅 **Deadline (TinyFish):** **${formatDateIST(suggestedDate)}** *(${countdown})*.\n\n` +
+        `Please confirm to save to your tracker:`;
+
+      if (conversation_id) {
+        addMessage(conversation_id, 'bot', botReply, cardActions, null, req.guestId);
+      }
+
+      return res.json({
+        success: true,
+        botReply,
+        actions: cardActions,
+        state: getFullState(req.guestId)
+      });
     }
 
     else if (action === 'dup_update') {
@@ -679,6 +778,8 @@ app.post('/api/action', (req, res) => {
         deadline: payload.deadline,
         location: payload.location || null,
         url: payload.url || null,
+        eligibility: payload.eligibility || null,
+        application_url: payload.application_url || null,
         status: 'pending'
       }, req.guestId);
       scheduleOppReminders(oppId, payload.deadline, 3, req.guestId);
@@ -919,12 +1020,99 @@ app.get('/api/opportunities', (req, res) => {
 
 app.post('/api/opportunities', (req, res) => {
   try {
-    const { title, org, category, deadline, location, url, status } = req.body;
+    const { title, org, category, deadline, location, url, status, eligibility, application_url } = req.body;
     if (!title) return res.status(400).json({ error: 'Title is required' });
-    const id = insertOpportunity({ title, org, category, deadline, location, url, status }, req.guestId);
+    const id = insertOpportunity({ title, org, category, deadline, location, url, status, eligibility, application_url }, req.guestId);
     if (deadline) scheduleOppReminders(id, deadline, 3, req.guestId);
     res.json(getOpportunityById(id, req.guestId));
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// TinyFish On-demand Deadline Re-fetch & Monitoring
+app.post('/api/opportunities/:id/check-deadline', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOpportunityById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Opportunity not found' });
+    if (!existing.url) return res.status(400).json({ error: 'This opportunity does not have a website URL to monitor' });
+
+    const result = await checkOpportunityDeadline(existing);
+    const updatedOpp = getOpportunityById(id, req.guestId);
+
+    res.json({
+      success: true,
+      result,
+      opp: updatedOpp,
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    console.error('Error checking deadline:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/opportunities/:id/accept-deadline-change', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOpportunityById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Opportunity not found' });
+
+    const updated = acceptDeadlineChange(id, req.guestId);
+    if (updated && updated.deadline) {
+      scheduleOppReminders(id, updated.deadline, 3, req.guestId);
+    }
+
+    res.json({
+      success: true,
+      opp: updated,
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/opportunities/:id/dismiss-deadline-change', (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = getOpportunityById(id, req.guestId);
+    if (!existing) return res.status(404).json({ error: 'Opportunity not found' });
+
+    const updated = dismissDeadlineChange(id, req.guestId);
+    res.json({
+      success: true,
+      opp: updated,
+      state: getFullState(req.guestId)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// TinyFish Live Opportunity Discovery
+app.all('/api/opportunities/discover', rateLimit(20, 60000), async (req, res) => {
+  try {
+    const query = req.method === 'GET' ? (req.query.q || req.query.query || '') : (req.body.q || req.body.query || '');
+    if (!query || !query.trim()) {
+      return res.status(400).json({ error: 'Search query parameter (q) is required' });
+    }
+
+    const rawResults = await searchWithTinyFish(query.trim());
+    const structuredItems = await structureDiscoveredOpportunities({
+      query: query.trim(),
+      rawResults,
+      today: todayIST()
+    });
+
+    res.json({
+      query: query.trim(),
+      count: structuredItems.length,
+      items: structuredItems
+    });
+  } catch (err) {
+    console.error('Error during opportunity discovery:', err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -39,6 +39,7 @@ function ensureColumn(tableName, colName, colDefinition) {
 // Set WAL mode and initialize tables
 export function initDB() {
   db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS guest_sessions(
@@ -62,6 +63,12 @@ export function initDB() {
       location TEXT,
       url TEXT,
       status TEXT DEFAULT 'pending', -- 'pending' | 'applied' | 'rejected'
+      eligibility TEXT,
+      application_url TEXT,
+      last_monitored_at TEXT,
+      detected_deadline TEXT,
+      deadline_change_detected INTEGER DEFAULT 0,
+      detected_change_note TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -163,6 +170,12 @@ export function initDB() {
 
   // Run non-destructive column migrations on existing tables before indexing guest_id
   ensureColumn('opportunities', 'guest_id', "TEXT DEFAULT 'default_guest'");
+  ensureColumn('opportunities', 'eligibility', "TEXT DEFAULT NULL");
+  ensureColumn('opportunities', 'application_url', "TEXT DEFAULT NULL");
+  ensureColumn('opportunities', 'last_monitored_at', "TEXT DEFAULT NULL");
+  ensureColumn('opportunities', 'detected_deadline', "TEXT DEFAULT NULL");
+  ensureColumn('opportunities', 'deadline_change_detected', "INTEGER DEFAULT 0");
+  ensureColumn('opportunities', 'detected_change_note', "TEXT DEFAULT NULL");
   ensureColumn('tasks', 'guest_id', "TEXT DEFAULT 'default_guest'");
   ensureColumn('events', 'guest_id', "TEXT DEFAULT 'default_guest'");
   ensureColumn('reminders', 'guest_id', "TEXT DEFAULT 'default_guest'");
@@ -321,12 +334,12 @@ export function getOpportunityById(id, guestId = null) {
   return db.prepare('SELECT * FROM opportunities WHERE id = ?').get(id);
 }
 
-export function insertOpportunity({ title, org = null, category = 'other', deadline = null, location = null, url = null, status = 'pending' }, guestId = 'default_guest') {
+export function insertOpportunity({ title, org = null, category = 'other', deadline = null, location = null, url = null, status = 'pending', eligibility = null, application_url = null }, guestId = 'default_guest') {
   const stmt = db.prepare(`
-    INSERT INTO opportunities (title, org, category, deadline, location, url, status, guest_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO opportunities (title, org, category, deadline, location, url, status, eligibility, application_url, guest_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const res = stmt.run(title, org, category, deadline, location, url, status, guestId);
+  const res = stmt.run(title, org, category, deadline, location, url, status, eligibility, application_url, guestId);
   return Number(res.lastInsertRowid);
 }
 
@@ -340,21 +353,129 @@ export function updateOpportunity(id, fields, guestId = null) {
   const location = fields.location !== undefined ? fields.location : current.location;
   const url = fields.url !== undefined ? fields.url : current.url;
   const status = fields.status !== undefined ? fields.status : current.status;
+  const eligibility = fields.eligibility !== undefined ? fields.eligibility : current.eligibility;
+  const application_url = fields.application_url !== undefined ? fields.application_url : current.application_url;
+  const detected_deadline = fields.detected_deadline !== undefined ? fields.detected_deadline : current.detected_deadline;
+  const deadline_change_detected = fields.deadline_change_detected !== undefined ? fields.deadline_change_detected : current.deadline_change_detected;
+  const detected_change_note = fields.detected_change_note !== undefined ? fields.detected_change_note : current.detected_change_note;
+  const last_monitored_at = fields.last_monitored_at !== undefined ? fields.last_monitored_at : current.last_monitored_at;
 
   if (guestId) {
     db.prepare(`
       UPDATE opportunities
-      SET title = ?, org = ?, category = ?, deadline = ?, location = ?, url = ?, status = ?
+      SET title = ?, org = ?, category = ?, deadline = ?, location = ?, url = ?, status = ?,
+          eligibility = ?, application_url = ?, detected_deadline = ?, deadline_change_detected = ?,
+          detected_change_note = ?, last_monitored_at = ?
       WHERE id = ? AND guest_id = ?
-    `).run(title, org, category, deadline, location, url, status, id, guestId);
+    `).run(title, org, category, deadline, location, url, status, eligibility, application_url, detected_deadline, deadline_change_detected, detected_change_note, last_monitored_at, id, guestId);
   } else {
     db.prepare(`
       UPDATE opportunities
-      SET title = ?, org = ?, category = ?, deadline = ?, location = ?, url = ?, status = ?
+      SET title = ?, org = ?, category = ?, deadline = ?, location = ?, url = ?, status = ?,
+          eligibility = ?, application_url = ?, detected_deadline = ?, deadline_change_detected = ?,
+          detected_change_note = ?, last_monitored_at = ?
       WHERE id = ?
-    `).run(title, org, category, deadline, location, url, status, id);
+    `).run(title, org, category, deadline, location, url, status, eligibility, application_url, detected_deadline, deadline_change_detected, detected_change_note, last_monitored_at, id);
   }
 
+  return getOpportunityById(id, guestId);
+}
+
+/**
+ * Get all opportunities that are monitored (have a URL and not rejected)
+ */
+export function getMonitoredOpportunities(guestId = null) {
+  if (guestId) {
+    return db.prepare(`
+      SELECT * FROM opportunities
+      WHERE guest_id = ? AND url IS NOT NULL AND url != '' AND status != 'rejected'
+      ORDER BY id ASC
+    `).all(guestId);
+  }
+  return db.prepare(`
+    SELECT * FROM opportunities
+    WHERE url IS NOT NULL AND url != '' AND status != 'rejected'
+    ORDER BY id ASC
+  `).all();
+}
+
+/**
+ * Record the result of a TinyFish deadline monitoring check
+ */
+export function recordDeadlineMonitoringResult(id, { detected_deadline, change_detected, change_note }, guestId = null) {
+  const now = new Date().toISOString();
+  if (guestId) {
+    db.prepare(`
+      UPDATE opportunities
+      SET last_monitored_at = ?,
+          detected_deadline = ?,
+          deadline_change_detected = ?,
+          detected_change_note = ?
+      WHERE id = ? AND guest_id = ?
+    `).run(now, detected_deadline || null, change_detected ? 1 : 0, change_note || null, id, guestId);
+  } else {
+    db.prepare(`
+      UPDATE opportunities
+      SET last_monitored_at = ?,
+          detected_deadline = ?,
+          deadline_change_detected = ?,
+          detected_change_note = ?
+      WHERE id = ?
+    `).run(now, detected_deadline || null, change_detected ? 1 : 0, change_note || null, id);
+  }
+  return getOpportunityById(id, guestId);
+}
+
+/**
+ * User accepts the detected deadline change:
+ * Sets confirmed deadline = detected_deadline, resets change flags.
+ * NEVER overwrites without this explicit function call.
+ */
+export function acceptDeadlineChange(id, guestId = null) {
+  const current = getOpportunityById(id, guestId);
+  if (!current || !current.detected_deadline) return current;
+
+  const newDeadline = current.detected_deadline;
+  if (guestId) {
+    db.prepare(`
+      UPDATE opportunities
+      SET deadline = ?,
+          deadline_change_detected = 0,
+          detected_change_note = NULL
+      WHERE id = ? AND guest_id = ?
+    `).run(newDeadline, id, guestId);
+  } else {
+    db.prepare(`
+      UPDATE opportunities
+      SET deadline = ?,
+          deadline_change_detected = 0,
+          detected_change_note = NULL
+      WHERE id = ?
+    `).run(newDeadline, id);
+  }
+  return getOpportunityById(id, guestId);
+}
+
+/**
+ * User dismisses the detected deadline change:
+ * Keeps original confirmed deadline, resets change flags.
+ */
+export function dismissDeadlineChange(id, guestId = null) {
+  if (guestId) {
+    db.prepare(`
+      UPDATE opportunities
+      SET deadline_change_detected = 0,
+          detected_change_note = NULL
+      WHERE id = ? AND guest_id = ?
+    `).run(id, guestId);
+  } else {
+    db.prepare(`
+      UPDATE opportunities
+      SET deadline_change_detected = 0,
+          detected_change_note = NULL
+      WHERE id = ?
+    `).run(id);
+  }
   return getOpportunityById(id, guestId);
 }
 

@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/gemma-copilot.test.js tests/guest-isolation.test.js",
+    "test": "node --test tests/gemma-copilot.test.js tests/guest-isolation.test.js tests/tinyfish.test.js",
+    "test:tinyfish": "node --test tests/tinyfish.test.js",
     "test:isolation": "node --test tests/guest-isolation.test.js",
     "verify:gemma": "node test-gemma.js"
   },

@@ -10,14 +10,19 @@ import { URL } from 'node:url';
 export function isPrivateIP(ip) {
   if (!ip) return true;
 
-  // IPv6 check
-  if (ip === '::1' || ip === '::' || ip.startsWith('fe80:') || ip.startsWith('fc') || ip.startsWith('fd')) {
-    return true;
-  }
-
   // IPv4 mapped IPv6 (e.g., ::ffff:127.0.0.1)
   if (ip.startsWith('::ffff:')) {
     ip = ip.replace('::ffff:', '');
+  }
+
+  // IPv6 check
+  if (ip.includes(':')) {
+    const lower = ip.toLowerCase();
+    if (lower === '::1' || lower === '::' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) {
+      return true;
+    }
+    // Public IPv6
+    return false;
   }
 
   const parts = ip.split('.').map(Number);

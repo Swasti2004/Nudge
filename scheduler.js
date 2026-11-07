@@ -14,9 +14,16 @@ import {
   getPushSubscriptions,
   getPushSubscriptionsForGuest,
   deletePushSubscription,
-  getOpportunityById
+  getOpportunityById,
+  getMonitoredOpportunities,
+  recordDeadlineMonitoringResult,
+  getConversations,
+  addMessage
 } from './db.js';
 import { formatDateIST, daysUntil } from './dates.js';
+import { fetchWithTinyFish } from './tinyfish.js';
+import { fetchPage } from './fetchPage.js';
+import { reExtractDeadlineFromPage } from './ai.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -202,10 +209,111 @@ export async function processDueReminders() {
   }
 }
 
-let schedulerInstance = null;
+/**
+ * Run a TinyFish live check on a single opportunity to detect if the deadline has changed.
+ * NEVER silently overwrites a confirmed deadline.
+ */
+export async function checkOpportunityDeadline(opp) {
+  if (!opp || !opp.url) {
+    return { error: 'No URL configured for opportunity' };
+  }
+
+  try {
+    const fetchRes = await fetchWithTinyFish(opp.url, { fallbackFn: fetchPage });
+    const extractRes = await reExtractDeadlineFromPage({
+      url: opp.url,
+      pageText: fetchRes.text,
+      currentDeadline: opp.deadline,
+      title: opp.title
+    });
+
+    const { detectedDeadline, isChanged, changeNote, eventDate, eligibility } = extractRes;
+
+    // Record result in DB
+    const updatedOpp = recordDeadlineMonitoringResult(
+      opp.id,
+      {
+        detected_deadline: detectedDeadline,
+        change_detected: isChanged,
+        change_note: changeNote
+      },
+      opp.guest_id
+    );
+
+    // If change is detected, notify user via Push and Chat
+    if (isChanged && detectedDeadline) {
+      console.log(`[Deadline Monitor] Detected deadline change for "${opp.title}" (ID: ${opp.id}): ${changeNote}`);
+
+      // 1. Send push notification
+      try {
+        await sendPushToGuest(opp.guest_id || 'default_guest', {
+          title: `⚠️ Deadline Change Detected: ${opp.title}`,
+          body: changeNote || `New deadline detected: ${formatDateIST(detectedDeadline)}. Review in Nudge.`,
+          url: '/?v=opps',
+          tag: `monitor-${opp.id}`
+        });
+      } catch (pushErr) {
+        console.warn('[Deadline Monitor] Push notification failed:', pushErr.message);
+      }
+
+      // 2. Post alert in active conversation
+      try {
+        const convs = getConversations(opp.guest_id || 'default_guest');
+        if (convs && convs.length > 0) {
+          const convId = convs[0].id;
+          const alertText = `🔔 **TinyFish Deadline Monitor Alert:**\n\n` +
+            `We re-checked the official page for **${opp.title}** and detected a change:\n` +
+            `• **Saved Deadline:** ${formatDateIST(opp.deadline) || 'None'}\n` +
+            `• **Detected on Page:** **${formatDateIST(detectedDeadline)}**\n` +
+            `• **Note:** ${changeNote}\n\n` +
+            `*Your confirmed deadline has NOT been altered automatically.* You can accept or keep your saved date in the **Opportunities** tab.`;
+
+          addMessage(convId, 'bot', alertText, null, null, opp.guest_id || 'default_guest');
+        }
+      } catch (convErr) {
+        console.warn('[Deadline Monitor] Could not post chat alert:', convErr.message);
+      }
+    }
+
+    return {
+      success: true,
+      oppId: opp.id,
+      detectedDeadline,
+      isChanged,
+      changeNote,
+      opp: updatedOpp
+    };
+  } catch (err) {
+    console.error(`[Deadline Monitor] Error checking opportunity ${opp.id} (${opp.url}):`, err.message);
+    return {
+      success: false,
+      oppId: opp.id,
+      error: err.message
+    };
+  }
+}
 
 /**
- * Start cron scheduler running minutely (single instance protection)
+ * Periodically re-check all monitored opportunities across the platform
+ */
+export async function checkAllMonitoredOpportunities() {
+  const opps = getMonitoredOpportunities();
+  if (!opps || opps.length === 0) return { checked: 0 };
+
+  console.log(`[Deadline Monitor] Running periodic check on ${opps.length} monitored opportunities...`);
+  const results = [];
+  for (const opp of opps) {
+    const res = await checkOpportunityDeadline(opp);
+    results.push(res);
+  }
+  return { checked: opps.length, results };
+}
+
+let schedulerInstance = null;
+let monitoringInstance = null;
+
+/**
+ * Start cron scheduler running minutely checks & 30-min deadline monitoring
  */
 export function startScheduler() {
   if (schedulerInstance) {
@@ -220,6 +328,14 @@ export function startScheduler() {
     }
   });
 
-  console.log('⏰ Nudge background scheduler running (minutely checks)');
+  monitoringInstance = cron.schedule('*/30 * * * *', async () => {
+    try {
+      await checkAllMonitoredOpportunities();
+    } catch (err) {
+      console.error('[Scheduler] Error during deadline monitoring check:', err);
+    }
+  });
+
+  console.log('⏰ Nudge background scheduler running (minutely reminders + 30-min TinyFish monitoring)');
   return schedulerInstance;
 }

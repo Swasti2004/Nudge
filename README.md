@@ -1,7 +1,7 @@
 # 🎯 Nudge Copilot
 
 > **AI-powered opportunity, deadline, and academic career copilot for students.**  
-> Powered by **Google Gemma 4** (`gemma-4-26b-a4b-it`) via the official `@google/genai` SDK, native `node:sqlite`, and calm, rewarding productivity design.
+> Powered by **TinyFish Web Agent** (Fetch & Search), **Google Gemma 4** (`gemma-4-26b-a4b-it`) via the official `@google/genai` SDK, native `node:sqlite`, and calm, rewarding productivity design.
 
 ---
 
@@ -18,12 +18,39 @@ Students face constant cognitive overload: internships, hackathons, scholarships
 
 **Nudge Copilot** transforms raw, unstructured input into an organized timeline:
 1. **Drop a link, paste an image screenshot (`Ctrl + V`), or type colloquially** (*"Remind me in 4 days to apply for EY Hackathon"*).
-2. **Google Gemma 4** extracts key dates, distinguishes registration deadlines from event dates, normalizes relative time to India Standard Time (IST), and avoids date hallucinations.
-3. **Reassuring 1-Click Confirmation** allows the student to verify or override extracted deadlines.
-4. **Persistent Anonymous Workspaces** automatically preserve personal data across browser reloads and server restarts without forced sign-up walls.
-5. **Cold Email Tracker & AI Drafter** helps students draft personalized cold emails with bracketed placeholders and follow-up schedules.
-6. **Proactive Web Push Reminders** alert students before deadlines arrive.
-7. **Executive Performance Reports & Excel Export** provide real-time pipeline visibility.
+2. **TinyFish Web Agent (Fetch API)** renders complex JavaScript SPAs and provides clean, injection-sanitized markdown directly to Gemma 4.
+3. **Google Gemma 4** extracts key dates, distinguishes registration deadlines from event dates, extracts eligibility, normalizes relative time to India Standard Time (IST), and avoids date hallucinations.
+4. **Reassuring 1-Click Confirmation** allows the student to verify or override extracted deadlines before anything is saved.
+5. **Automated Deadline Monitoring** periodically re-fetches official opportunity pages using TinyFish, alerts users to deadline changes, and **never silently overwrites** confirmed dates.
+6. **Live Opportunity Discovery** uses TinyFish Search API + Gemma 4 to find internships, hackathons, and scholarships with 1-click tracking.
+7. **Persistent Anonymous Workspaces** automatically preserve personal data across browser reloads and server restarts without forced sign-up walls.
+8. **Cold Email Tracker & AI Drafter** helps students draft personalized cold emails with bracketed placeholders and follow-up schedules.
+9. **Proactive Web Push Reminders** alert students before deadlines arrive.
+10. **Executive Performance Reports & Excel Export** provide real-time pipeline visibility.
+
+---
+
+## 🐟 TinyFish Web Agent Integration
+
+Nudge Copilot integrates **TinyFish** across three critical workflows:
+
+### 1. TinyFish Fetch + Gemma 4 Pipeline
+* **Endpoint:** `POST https://api.fetch.tinyfish.ai`
+* **Real Browser Rendering:** Modern student portals (Devfolio, Unstop, Greenhouse, Lever, Luma) rely heavily on client-side JavaScript rendering. TinyFish executes full browser rendering to extract dynamically loaded deadline schedules, eligibility criteria, and application links.
+* **Security & Prompt Injection Protection:** URLs undergo strict pre-flight SSRF validation (DNS verification against private IPv4 and IPv6 ranges). Webpage text is stripped of script tags, style sheets, and prompt-injection overrides (`ignore previous instructions`, `system prompt`) before reaching Gemma 4.
+* **Graceful Fallback:** If `TINYFISH_API_KEY` is not present, times out, or encounters network errors, the engine falls back safely to local SSRF-safe fetching without crashing the user's flow.
+* **Registration Deadline vs Event Date Separation:** Accurately distinguishes application/registration cutoffs from the dates the competition/event occurs.
+
+### 2. Live Deadline Monitoring
+* **Background Checks:** Monitored opportunities with URLs are automatically checked every 30 minutes in the background, or on-demand via the **"🐟 Check Live Page"** button.
+* **Proactive Alerts:** If an organization extends or advances a registration deadline, Nudge notifies the student via Web Push and a prominent alert in their active conversation and Opportunities tab.
+* **Non-Negotiable Invariant:** Confirmed deadlines are **NEVER silently overwritten**. The student is presented with clear options: `[Update to new date]` or `[Keep saved date]`.
+
+### 3. Opportunity Discovery
+* **Endpoint:** `GET https://api.search.tinyfish.ai?query=...`
+* **Search Engine Discovery:** Students can type naturally in chat (*"Find upcoming AI hackathons"*, *"Search summer software internships"*) or click the **"🐟 Discover with TinyFish"** modal in the Opportunities view.
+* **Structured by Gemma 4:** Search snippets and URLs are structured into title, organization, category, deadline, and eligibility.
+* **Confirmation-First Saving:** Discovered opportunities are presented for review with 1-click confirmation before anything is saved to the tracker.
 
 ---
 
@@ -35,7 +62,7 @@ Students face constant cognitive overload: internships, hackathons, scholarships
    │      (Calm Productivity Palette: #F7F6F2 / #252746)          │
    │   - Collapsible Navigation & Chat Session Drawer             │
    │   - Service Worker & Web Push Client                         │
-   │   - Interactive Modals, Tour, and Countdown Cards            │
+   │   - TinyFish Discovery Modal & Deadline Change Banners       │
    └──────────────────────────────┬───────────────────────────────┘
                                   │ HTTP (SameSite=Lax Cookie)
                                   ▼
@@ -44,25 +71,26 @@ Students face constant cognitive overload: internships, hackathons, scholarships
    │  - Anonymous Guest Session Middleware (HttpOnly, Secure)     │
    │  - Rate Limiter (Token-Bucket per Guest)                     │
    │  - SSRF Protection (IPv4/IPv6 private IP filtering)          │
-   │  - node-cron Background Scheduler (Single-Instance Safe)     │
-   └───────────────┬──────────────────────────────┬───────────────┘
-                   │                              │
-                   ▼                              ▼
-   ┌──────────────────────────────┐ ┌─────────────────────────────┐
-   │   Google Gemma 4 AI Engine   │ │     SQLite Persistence      │
-   │ - @google/genai SDK          │ │ - node:sqlite DatabaseSync  │
-   │ - Model: gemma-4-26b-a4b-it  │ │ - WAL Mode Journaling       │
-   │ - Multimodal Vision Support  │ │ - Multi-tenant Isolation    │
-   │ - Tesseract.js OCR Fallback  │ │ - Configurable DATABASE_PATH│
-   └──────────────────────────────┘ └─────────────────────────────┘
+   │  - node-cron Scheduler (Reminders + 30-min TinyFish Monitor) │
+   └───────┬──────────────────────┬──────────────────────┬────────┘
+           │                      │                      │
+           ▼                      ▼                      ▼
+   ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
+   │   TinyFish    │      │ Google Gemma4 │      │    SQLite     │
+   │ Web Agent API │      │   AI Engine   │      │  Persistence  │
+   │- Fetch (SPAs) │      │- @google/genai│      │- node:sqlite  │
+   │- Search (Live)│      │- Strict Schema│      │- WAL Mode     │
+   │- SSRF Shield  │      │- Multi-modal  │      │- Multi-tenant │
+   └───────────────┘      └───────────────┘      └───────────────┘
 ```
 
 - **Live URL:** [https://nudge-production-4842.up.railway.app/](https://nudge-production-4842.up.railway.app/)
 - **Backend Runtime:** Node.js (v24 / v22) using native ES modules (`"type": "module"`).
+- **Web Agent:** Official TinyFish Fetch & Search API (`tinyfish.js`).
 - **AI Engine:** Google Gemma 4 (`gemma-4-26b-a4b-it`) via official `@google/genai` SDK with strict JSON schema enforcement and fallback heuristics.
 - **OCR:** `tesseract.js` for on-device fallback optical character recognition.
 - **SSRF Protection:** DNS resolution and IP range validation blocking loopback (`127.0.0.1`), link-local (`169.254.0.0/16`), private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), and IPv6 equivalents.
-- **Database:** Native `node:sqlite` with `DatabaseSync` in WAL mode.
+- **Database:** Native `node:sqlite` with `DatabaseSync` in WAL mode and `PRAGMA busy_timeout = 5000`.
 - **Push Notifications:** `web-push` using VAPID credentials.
 - **Reports:** `xlsx` for Excel workbook generation.
 
@@ -126,11 +154,16 @@ Students face constant cognitive overload: internships, hackathons, scholarships
 
 ## 🧪 Testing
 
-Nudge Copilot includes automated test coverage for AI parsing, deadline extraction, date math, duplicate detection, and guest isolation.
+Nudge Copilot includes 41 automated tests covering TinyFish Fetch & Search, SSRF validation, prompt injection resistance, deadline monitoring, Gemma 4 AI parsing, date math, duplicate detection, and guest isolation.
 
 Run all tests:
 ```bash
 npm test
+```
+
+Run TinyFish tests specifically:
+```bash
+npm run test:tinyfish
 ```
 
 Run guest isolation security tests specifically:
@@ -156,6 +189,7 @@ The production service is deployed on Railway using persistent volume storage an
 | `DATABASE_PATH` | `/data/nudge.db` | Points SQLite to persistent volume storage |
 | `GEMMA_API_KEY` | *(Set in Railway)* | Google AI Studio API key |
 | `GEMMA_MODEL` | `gemma-4-26b-a4b-it` | Gemma 4 model identifier |
+| `TINYFISH_API_KEY` | *(Set in Railway)* | TinyFish Web Agent API key (Fetch & Search) |
 | `AI_MODE` | `production` | Live AI inference mode |
 | `VAPID_SUBJECT` | `mailto:support@nudgeapp.local` | Contact email for push services |
 
