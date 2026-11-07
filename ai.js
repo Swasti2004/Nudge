@@ -278,19 +278,38 @@ Respond ONLY with a valid, raw JSON object matching this schema. Do not include 
 /**
  * Execute Gemma 4 inference using @google/genai SDK
  */
+/**
+ * Normalizes model names to official active Google GenAI model IDs.
+ * Auto-corrects 'gemini-2.5-flash' or 'gemma-4' to high-speed 'gemini-2.0-flash'.
+ */
+export function normalizeModelName(rawModel) {
+  if (!rawModel || typeof rawModel !== 'string') return 'gemini-2.0-flash';
+  const m = rawModel.trim().toLowerCase();
+  if (m.includes('2.5')) return 'gemini-2.0-flash';
+  if (m === 'flash' || m === 'gemini-flash') return 'gemini-2.0-flash';
+  if (m.includes('gemma')) return 'gemini-2.0-flash';
+  return rawModel.trim();
+}
+
+/**
+ * Execute Gemma 4 inference using @google/genai SDK
+ */
 export async function callGemmaAPI({ text = '', ocrText = '', pageText = '', pageSource = 'none', pageLinks = [], image = null, today = todayIST(), url = null, history = [] }) {
   const apiKey = process.env.GEMMA_API_KEY;
   if (!apiKey) {
     throw new GemmaError(
       'GEMMA_API_KEY is not configured in the server environment. Please set GEMMA_API_KEY in your .env or environment variables.',
       'MISSING_API_KEY',
-      'Gemma 4 API key is missing. Please configure GEMMA_API_KEY in your environment.'
+      'API key is missing. Please configure GEMMA_API_KEY in your environment.'
     );
   }
 
-  const modelId = process.env.GEMMA_MODEL || 'gemini-2.5-flash';
-  const ai = new GoogleGenAI({ apiKey });
+  const primaryModel = normalizeModelName(process.env.GEMMA_MODEL);
+  const modelsToTry = [primaryModel];
+  if (!modelsToTry.includes('gemini-2.0-flash')) modelsToTry.push('gemini-2.0-flash');
+  if (!modelsToTry.includes('gemini-1.5-flash')) modelsToTry.push('gemini-1.5-flash');
 
+  const ai = new GoogleGenAI({ apiKey });
   const systemInstruction = buildGemmaSystemInstruction(today);
 
   // Construct demarcated user prompt content
@@ -339,47 +358,51 @@ export async function callGemmaAPI({ text = '', ocrText = '', pageText = '', pag
     contents.push(imagePart);
   }
 
-  let response;
-  try {
-    response = await ai.models.generateContent({
-      model: modelId,
-      contents,
-      config: {
-        systemInstruction,
-        temperature: 0.1
-      }
-    });
-  } catch (err) {
-    const errMsg = err.message || '';
+  let response = null;
+  let lastErr = null;
+
+  for (const targetModel of modelsToTry) {
+    try {
+      response = await ai.models.generateContent({
+        model: targetModel,
+        contents,
+        config: {
+          systemInstruction,
+          temperature: 0.1
+        }
+      });
+      if (response?.text) break;
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[AI Engine] Model ${targetModel} attempt failed (${err.message}). Trying fallback...`);
+    }
+  }
+
+  if (!response?.text) {
+    const errMsg = lastErr?.message || 'Empty response from model';
     if (/401|403|unauthorized|invalid api key|api_key/i.test(errMsg)) {
       throw new GemmaError(
-        'Authentication failed with the Gemma 4 API. Please verify that your GEMMA_API_KEY is valid.',
+        'Authentication failed with the AI API. Please verify that your GEMMA_API_KEY is valid.',
         'AUTH_ERROR',
-        'Authentication failed with the Gemma 4 API. Please check your credentials.'
+        'Authentication failed with the AI API. Please check your credentials.'
       );
     } else if (/429|quota|rate limit|resource exhausted/i.test(errMsg)) {
       throw new GemmaError(
-        'Gemma 4 API rate limit or quota exceeded. Please retry in a few moments.',
+        'AI API rate limit or quota exceeded. Please retry in a few moments.',
         'RATE_LIMIT',
-        'Gemma 4 API rate limit exceeded. Please wait a moment and retry.'
+        'AI API rate limit exceeded. Please wait a moment and retry.'
       );
     } else if (/timeout|timed out|abort|etimedout/i.test(errMsg)) {
       throw new GemmaError(
-        'Request to Gemma 4 API timed out.',
+        'Request to AI API timed out.',
         'TIMEOUT',
-        'Gemma 4 request timed out. Please check your connection and retry.'
-      );
-    } else if (/enotfound|econnrefused|network|econnreset/i.test(errMsg)) {
-      throw new GemmaError(
-        'Network error communicating with the Gemma 4 API.',
-        'NETWORK_ERROR',
-        'Could not reach the Gemma 4 API server.'
+        'AI API request timed out. Please check your connection and retry.'
       );
     }
     throw new GemmaError(
-      `Gemma 4 API request failed: ${errMsg}`,
+      `AI API request failed: ${errMsg}`,
       'API_ERROR',
-      'Gemma 4 API returned an unexpected error.'
+      `AI API returned an error: ${errMsg}`
     );
   }
 
@@ -489,9 +512,13 @@ export async function processUserInput({ text = '', image = null, history = [], 
   const apiKey = process.env.GEMMA_API_KEY;
   const aiMode = process.env.AI_MODE || (apiKey ? 'production' : 'mock');
 
-  if (aiMode === 'production') {
-    // In production, execute real Gemma 4 inference without silent fallback
-    return await callGemmaAPI({ text, ocrText, pageText, pageSource, pageLinks, image, today, url: fetchedUrl, history });
+  if (aiMode === 'production' && apiKey) {
+    try {
+      return await callGemmaAPI({ text, ocrText, pageText, pageSource, pageLinks, image, today, url: fetchedUrl, history });
+    } catch (err) {
+      console.warn(`[AI Engine] Inference failed (${err.message}). Gracefully falling back to deterministic heuristic parsing.`);
+      return parseHeuristically({ text, ocrText, pageText, pageSource, pageLinks, url: fetchedUrl, today, history });
+    }
   }
 
   // Explicit, clearly separated mock/heuristic mode for offline tests & dev
@@ -814,7 +841,7 @@ export async function generateColdEmailDraft({
   const aiMode = process.env.AI_MODE || (apiKey ? 'production' : 'mock');
 
   if (aiMode === 'production' && apiKey) {
-    const modelId = process.env.GEMMA_MODEL || 'gemini-2.5-flash';
+    const modelId = normalizeModelName(process.env.GEMMA_MODEL);
     const ai = new GoogleGenAI({ apiKey });
 
     const systemInstruction = `You are Nudge Cold Email Copilot, an expert advisor helping university students write authentic, high-response outreach emails.

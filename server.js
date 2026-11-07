@@ -63,7 +63,7 @@ import {
   recordDeadlineMonitoringResult
 } from './db.js';
 
-import { processUserInput, generateColdEmailDraft, structureDiscoveredOpportunities } from './ai.js';
+import { processUserInput, generateColdEmailDraft, structureDiscoveredOpportunities, parseHeuristically } from './ai.js';
 import { todayIST, formatDateIST, daysUntil, countdownText, addDays } from './dates.js';
 import { vapidKeys, startScheduler, sendPushToGuest, sendPushToAll, checkOpportunityDeadline } from './scheduler.js';
 import { searchWithTinyFish } from './tinyfish.js';
@@ -177,8 +177,21 @@ if (cleanupTimer.unref) {
   cleanupTimer.unref();
 }
 
+// Navigation routes for landing page vs main app
+app.get('/', (req, res, next) => {
+  if (req.query.v || req.query.app === '1') {
+    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    return res.redirect('/app' + qs);
+  }
+  next();
+});
+
+app.get('/app', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+});
+
 // Static frontend files
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
 /**
  * Health check endpoint for Railway and deployment monitors

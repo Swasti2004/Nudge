@@ -1,154 +1,326 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nudge — Student Deadline & Opportunity Copilot</title>
-  <link rel="stylesheet" href="/style.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nudge – Your opportunities deserve more than a saved link</title>
+<meta name="description" content="Nudge turns links, posters, screenshots, and quick messages into organized opportunities, actionable tasks, and timely reminders.">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/landing.css">
+<script>
+  // Redirect to app if parameters are passed (e.g. ?v=opps from reminders)
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.has('v') || urlParams.has('app')) {
+    window.location.replace('/app' + window.location.search);
+  }
+</script>
 </head>
 <body>
-  <div id="app-container">
-    <!-- Sidebar Navigation -->
-    <aside id="sidebar">
-      <div class="brand-header">
-        <a href="#chat" class="brand-logo" data-view="chat" title="Nudge Home">
-          <div class="brand-icon">⚡</div>
-          <div class="brand-text">
-            <h1>Nudge</h1>
-          </div>
-        </a>
-        <div class="brand-header-actions" style="display: flex; align-items: center; gap: 4px;">
-          <button class="btn btn-secondary btn-sm" id="sidebar-tour-btn" style="padding: 4px 8px; font-size: 0.75rem;" title="Start Interactive Tour">✨ Tour</button>
-          <button class="sidebar-collapse-btn" id="btn-collapse-sidebar" title="Collapse sidebar (Ctrl+B)">◀</button>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10 21a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></symbol>
+  <symbol id="i-checksq" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12l3 3 5-6"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-cap" viewBox="0 0 24 24"><path d="M2 9l10-5 10 5-10 5zM6 11v5c0 1.5 3 3 6 3s6-1.5 6-3v-5"/></symbol>
+  <symbol id="i-brief" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3 13h18"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-4 3-6 7-6s7 2 7 6M17 4.5a3.500 3.500 0 0 1 0 7M22 20c0-3-1.5-5-4-5.7"/></symbol>
+  <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></symbol>
+  <symbol id="i-img" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 16l-5-5-9 9"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+</svg>
+
+<header class="nav">
+  <div class="container nav__inner">
+    <a href="#top" class="logo"><span class="logo__mark">N</span>Nudge</a>
+    <button class="nav__toggle" aria-label="Toggle menu" aria-expanded="false" aria-controls="menu"><span></span><span></span></button>
+    <nav id="menu" class="nav__links">
+      <a href="#how">How It Works</a>
+      <a href="#features">Features</a>
+      <a href="#use-cases">Use Cases</a>
+      <a href="#faq">FAQ</a>
+      <a href="#compare" class="nav__explore">Explore</a>
+      <a href="/app" class="btn btn--primary btn--sm">Launch Copilot <svg class="ic"><use href="#i-arrow"/></svg></a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container hero__grid">
+      <div class="hero__copy">
+        <p class="eyebrow"><svg class="ic"><use href="#i-spark"/></svg>Your personal opportunity assistant</p>
+        <h1>Your opportunities deserve more than a <span class="accent">saved link.</span></h1>
+        <p class="lead">Internships, hackathons, events, and application deadlines are scattered everywhere. Nudge turns links, posters, screenshots, and quick messages into organized opportunities, actionable tasks, and timely reminders.</p>
+        <div class="hero__cta">
+          <a href="/app" class="btn btn--primary">Get Started — Open App <svg class="ic"><use href="#i-arrow"/></svg></a>
+          <a href="#how" class="btn btn--ghost">See How It Works</a>
         </div>
+        <p class="hero__note"><svg class="ic"><use href="#i-check"/></svg>From discovery to deadline. All in one place.</p>
       </div>
 
-      <nav class="nav-menu">
-        <div class="nav-section-title">Copilot</div>
-        <a class="nav-item active" data-view="chat">
-          <div class="nav-item-left">
-            <span class="nav-icon">💬</span>
-            <span>Chat Assistant</span>
-          </div>
-        </a>
-
-        <div class="nav-section-title" style="margin-top: 10px;">Tracking</div>
-        <a class="nav-item" data-view="opps">
-          <div class="nav-item-left">
-            <span class="nav-icon">🎯</span>
-            <span>Opportunities</span>
-          </div>
-          <span class="nav-badge" id="badge-opps">0</span>
-        </a>
-
-        <a class="nav-item" data-view="outreach">
-          <div class="nav-item-left">
-            <span class="nav-icon">📨</span>
-            <span>Cold Emailing</span>
-          </div>
-          <span class="nav-badge" id="badge-outreach">0</span>
-        </a>
-
-        <a class="nav-item" data-view="reports">
-          <div class="nav-item-left">
-            <span class="nav-icon">📊</span>
-            <span>Reports & Funnel</span>
-          </div>
-        </a>
-
-        <a class="nav-item" data-view="tasks">
-          <div class="nav-item-left">
-            <span class="nav-icon">📋</span>
-            <span>Tasks</span>
-          </div>
-          <span class="nav-badge" id="badge-tasks">0</span>
-        </a>
-
-        <a class="nav-item" data-view="events">
-          <div class="nav-item-left">
-            <span class="nav-icon">🗓️</span>
-            <span>Events & Talks</span>
-          </div>
-          <span class="nav-badge" id="badge-events">0</span>
-        </a>
-
-        <div class="nav-section-title" style="margin-top: 10px;">Schedule</div>
-        <a class="nav-item" data-view="cal">
-          <div class="nav-item-left">
-            <span class="nav-icon">📅</span>
-            <span>Calendar</span>
-          </div>
-        </a>
-
-        <a class="nav-item" data-view="soon">
-          <div class="nav-item-left">
-            <span class="nav-icon">⏳</span>
-            <span>Due Soon</span>
-          </div>
-          <span class="nav-badge urgent" id="badge-soon">0</span>
-        </a>
-
-        <div class="nav-section-title" style="margin-top: 10px;">System</div>
-        <a class="nav-item" data-view="set">
-          <div class="nav-item-left">
-            <span class="nav-icon">⚙️</span>
-            <span>Settings</span>
-          </div>
-        </a>
-      </nav>
-
-      <!-- Sidebar Footer User Profile -->
-      <div class="sidebar-footer">
-        <div class="user-snippet" id="sidebar-user-btn" data-view="set">
-          <div class="user-avatar" id="sidebar-user-avatar">U</div>
-          <div class="user-info">
-            <div class="user-name" id="sidebar-user-name">User</div>
-            <div class="user-goal" id="sidebar-user-goal">Internships & Jobs</div>
-          </div>
+      <div class="mock" aria-hidden="true">
+        <aside class="mock__side">
+          <div class="mock__brand"><span class="logo__mark logo__mark--sm">N</span>Nudge</div>
+          <p class="mock__label">Overview</p>
+          <span class="mock__item is-on"><svg class="ic"><use href="#i-spark"/></svg>Chat Assistant</span>
+          <p class="mock__label">Features</p>
+          <span class="mock__item"><svg class="ic"><use href="#i-compass"/></svg>Opportunities</span>
+          <span class="mock__item"><svg class="ic"><use href="#i-mail"/></svg>Cold Emailing</span>
+          <span class="mock__item"><svg class="ic"><use href="#i-checksq"/></svg>Tasks</span>
+          <span class="mock__item"><svg class="ic"><use href="#i-bell"/></svg>Events &amp; Talks</span>
+          <p class="mock__label">Planning</p>
+          <span class="mock__item"><svg class="ic"><use href="#i-cal"/></svg>Calendar</span>
+          <span class="mock__item"><svg class="ic"><use href="#i-clock"/></svg>Due Soon</span>
+        </aside>
+        <div class="mock__main">
+          <div class="mock__top"><strong>Copilot Assistant</strong><span>Help me find the power topic to start</span></div>
+          <p class="mock__prompt">What opportunity or deadline would you like to capture?</p>
+          <div class="mock__bubble">Found this for internship. Applications close on 15 November.</div>
+          <div class="mock__card"><span class="mock__tag">Captured ML Internship (WFH) from 28Nights</span><small>Deadline found in the latest opportunity: 15 Nov 2026</small></div>
+          <div class="mock__card mock__card--green"><small>Confirming the schedule</small><strong>ML Internship (WFH)</strong><small>Application · Region · Internship</small><span class="mock__ok">Deadline confirmed for 15 Nov 2026</span></div>
+          <div class="mock__input">Reply or ask Nudge…</div>
         </div>
+        <div class="mock__float"><small>Coming up · 15 Nov 2026</small><strong>ML Internship (WFH)</strong><span>Application open · 28Nights</span></div>
       </div>
-    </aside>
+    </div>
+    <ul class="container hero__strip">
+      <li><svg class="ic"><use href="#i-link"/></svg>Capture from anywhere</li>
+      <li><svg class="ic"><use href="#i-cal"/></svg>Keep dates in view</li>
+      <li><svg class="ic"><use href="#i-check"/></svg>Follow through</li>
+    </ul>
+  </section>
 
-    <!-- Main Content Area -->
-    <main id="main-view">
-      <!-- Dynamic Header -->
-      <header class="view-header">
-        <div class="view-header-left" style="display: flex; align-items: center; gap: 14px;">
-          <button class="sidebar-toggle-btn" id="btn-toggle-main-sidebar" title="Toggle Navigation Sidebar (Ctrl+B) - Reserve Space" aria-label="Toggle Navigation Sidebar">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-              <line x1="9" y1="3" x2="9" y2="21"></line>
-            </svg>
-          </button>
-          <div class="view-title-group">
-            <h2 id="view-title">Copilot Assistant</h2>
-            <p id="view-subtitle">Agentic deadline capture from unstructured text, links & posters</p>
-          </div>
-        </div>
-        <div class="view-actions" id="view-actions">
-          <!-- Populated dynamically based on active view -->
-        </div>
+  <!-- Gap -->
+  <section class="section section--cream">
+    <div class="container">
+      <header class="head head--center">
+        <p class="eyebrow">The follow-through gap</p>
+        <h2>You found the opportunity. Now what?</h2>
+        <p class="sub">Saving an opportunity is easy. Remembering to apply, register, prepare, and follow up is where things get lost.</p>
       </header>
-
-      <!-- 8 Views Content Panels -->
-      <div class="view-content" id="view-content-root">
-        <!-- Views rendered by app.js -->
+      <div class="grid grid--3">
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-link"/></svg></span><h3>Scattered opportunities</h3><p>Internships in one tab, hackathons in another, event posters in your gallery, and deadlines buried in chats.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-cal"/></svg></span><h3>Forgotten deadlines</h3><p>You save opportunities for later, but later becomes tomorrow, next week, and then too late.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-bell"/></svg></span><h3>Missed follow-ups</h3><p>You send your resume or register for an event, but forget the next action that could make the difference.</p></article>
       </div>
-    </main>
+    </div>
+  </section>
+
+  <!-- Scattered to next -->
+  <section class="section" id="how">
+    <div class="container split">
+      <div>
+        <p class="eyebrow">A little more than a bookmark</p>
+        <h2>From scattered information to your next action.</h2>
+        <p class="sub">Nudge helps you turn everyday information into a manageable plan, without manually organizing every deadline.</p>
+        <ol class="checks">
+          <li><span>01</span>Capture URLs, posters, screenshots, or a quick description</li>
+          <li><span>02</span>Review extracted opportunity, organization, deadline, and next steps</li>
+          <li><span>03</span>Confirm or correct the details before saving to your tracker</li>
+          <li><span>04</span>Keep deadlines, tasks, events, and follow-ups in view</li>
+        </ol>
+      </div>
+      <div class="panel">
+        <div class="panel__head"><strong>A simple path to follow-through</strong><small>From capture to a clear next step</small></div>
+        <div class="flow">
+          <div class="flow__cell"><svg class="ic"><use href="#i-link"/></svg>Paste link<br>or share a flyer</div>
+          <div class="flow__cell"><svg class="ic"><use href="#i-spark"/></svg>Extract<br>key details</div>
+          <div class="flow__cell"><svg class="ic"><use href="#i-check"/></svg>Confirm<br>and organize</div>
+          <div class="flow__cell"><svg class="ic"><use href="#i-cal"/></svg>Track<br>what comes next</div>
+        </div>
+        <p class="panel__foot"><svg class="ic"><use href="#i-spark"/></svg>Keep related details and next actions together, while you stay in control.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Toolkit -->
+  <section class="section section--tint" id="features">
+    <div class="container">
+      <header class="head head--center">
+        <p class="eyebrow">One thoughtful toolkit</p>
+        <h2>Everything you need to follow through.</h2>
+        <p class="sub">One place to capture, organize, and act on the opportunities that matter.</p>
+      </header>
+      <div class="grid grid--3">
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-spark"/></svg></span><h3>AI-powered capture</h3><p>Turn supported URLs, posters, screenshots, flyers, and natural language messages into structured information.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-folder"/></svg></span><h3>Opportunity tracker</h3><p>Keep internships, jobs, hackathons, scholarships, and applications organized in one place.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-cal"/></svg></span><h3>Deadline management</h3><p>See important dates together and identify what needs your attention next.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-checksq"/></svg></span><h3>Tasks that move you forward</h3><p>Break opportunities into concrete actions like submitting an application or preparing documents.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-mail"/></svg></span><h3>Cold email follow-ups</h3><p>Track outreach and remember when to follow up after sending a resume or networking email.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-clock"/></svg></span><h3>A clearer upcoming view</h3><p>Keep approaching deadlines, scheduled events, and pending tasks in view.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Four steps -->
+  <section class="section section--cream">
+    <div class="container">
+      <header class="head head--center">
+        <p class="eyebrow">A closer look</p>
+        <h2>Four steps between “I found it” and “I did it.”</h2>
+        <p class="sub">Move through the walkthrough to see how Nudge makes a scattered opportunity easier to act on.</p>
+      </header>
+      <div class="walk">
+        <div class="walk__tabs" role="tablist" aria-label="Walkthrough steps">
+          <button role="tab" class="is-on" aria-selected="true" data-step="0"><span>01</span><b>Drop it in</b><small>Start with the opportunity wherever you found it</small></button>
+          <button role="tab" aria-selected="false" data-step="1"><span>02</span><b>Let Nudge extract the details</b><small>Review the useful pieces pulled from your source</small></button>
+          <button role="tab" aria-selected="false" data-step="2"><span>03</span><b>Confirm and save</b><small>Check the details before they become part of your plan</small></button>
+          <button role="tab" aria-selected="false" data-step="3"><span>04</span><b>Take action on time</b><small>See your next task and the upcoming date in context</small></button>
+        </div>
+        <div class="workspace">
+          <div class="workspace__bar"><span class="logo__mark logo__mark--sm">N</span><b>Nudge workspace</b><small>Opportunity intake · 28Nights</small></div>
+          <div class="workspace__body" data-panel="0">
+            <span class="tag">AI / Capture</span>
+            <h3>A quick note is enough to begin.</h3>
+            <p>Paste a link, add a flyer, or simply describe what you found.</p>
+            <div class="note">Hey, I found an ML Internship. Applications close on 15 November.<br><u>28nights.com/careers/ml-internship</u></div>
+            <div class="attach"><svg class="ic"><use href="#i-img"/></svg><span><b>Internship poster attached</b><small>Image added for extraction</small></span></div>
+          </div>
+          <div class="workspace__body" data-panel="1" hidden>
+            <span class="tag">Extracting</span>
+            <h3>Nudge reads the details for you.</h3>
+            <p>Role, organization, and deadline are pulled from your source.</p>
+            <dl class="facts"><div><dt>Role</dt><dd>ML Internship (WFH)</dd></div><div><dt>Organization</dt><dd>28Nights</dd></div><div><dt>Deadline</dt><dd>15 Nov 2026</dd></div></dl>
+          </div>
+          <div class="workspace__body" data-panel="2" hidden>
+            <span class="tag">Confirm</span>
+            <h3>Check it, fix it, then save it.</h3>
+            <p>You stay in control of what goes into your tracker.</p>
+            <div class="note">Deadline: <b>15 Nov 2026</b> · Type: Internship</div>
+            <button class="btn btn--primary btn--sm" type="button">Save to tracker</button>
+          </div>
+          <div class="workspace__body" data-panel="3" hidden>
+            <span class="tag">Next up</span>
+            <h3>Know exactly what to do next.</h3>
+            <p>Your task and the closing date show up together.</p>
+            <div class="note">Submit application · due 15 Nov 2026</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Use cases -->
+  <section class="section" id="use-cases">
+    <div class="container">
+      <header class="head head--center">
+        <p class="eyebrow">For wherever you're headed</p>
+        <h2>Built for people with a lot on their minds.</h2>
+        <p class="sub">Make room for the opportunities you care about—and the work that comes after finding them.</p>
+      </header>
+      <div class="grid grid--4">
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-cap"/></svg></span><h3>Students</h3><p>Manage internships, scholarships, college events, and application deadlines.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-brief"/></svg></span><h3>Job seekers</h3><p>Track job applications, recruiter conversations, interview preparation, and follow-ups.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-users"/></svg></span><h3>Hackathon participants</h3><p>Keep registrations, submission deadlines, team tasks, and event details organized.</p></article>
+        <article class="card"><span class="icon"><svg class="ic"><use href="#i-compass"/></svg></span><h3>Career switchers &amp; beginners</h3><p>Build a reliable system for learning opportunities, networking, applications, and next steps.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Compare -->
+  <section class="section section--tint" id="compare">
+    <div class="container">
+      <header class="head head--center">
+        <p class="eyebrow">Not another listings page</p>
+        <h2>Finding opportunities is only half the job.</h2>
+        <p class="sub">Opportunity directories help you discover links. Nudge helps you manage what happens after you find one.</p>
+      </header>
+      <div class="compare">
+        <div class="compare__col">
+          <h3>Typical opportunity directory</h3>
+          <ul><li>Lists opportunities</li><li>Sends you to the original link</li><li>Deadline tracking varies by service</li><li>Often focuses on discovery</li><li>Related information may live elsewhere</li></ul>
+        </div>
+        <div class="compare__col compare__col--nudge">
+          <h3>Nudge</h3>
+          <ul>
+            <li><svg class="ic"><use href="#i-check"/></svg>Captures opportunities from multiple sources</li>
+            <li><svg class="ic"><use href="#i-check"/></svg>Extracts useful details into a structured record</li>
+            <li><svg class="ic"><use href="#i-check"/></svg>Organizes deadlines and upcoming actions</li>
+            <li><svg class="ic"><use href="#i-check"/></svg>Connects discovery with tasks and follow-ups</li>
+            <li><svg class="ic"><use href="#i-check"/></svg>Brings details into one workflow</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Example -->
+  <section class="section section--cream">
+    <div class="container">
+      <header class="head head--center">
+        <p class="eyebrow">A real-world kind of moment</p>
+        <h2>One saved opportunity. A clear next step.</h2>
+        <p class="sub">A simple example of moving from a poster in your camera roll to an organized plan.</p>
+      </header>
+      <div class="timeline">
+        <ol>
+          <li><span class="dot"></span><small>Step 01</small><h3>Share the poster</h3><p>A student uploads an internship poster they found.</p></li>
+          <li><span class="dot"></span><small>Step 02</small><h3>Review the details</h3><p>Nudge extracts ML Internship (WFH), 28Nights, and the closing date.</p></li>
+          <li><span class="dot"></span><small>Step 03</small><h3>Confirm the date</h3><p>The student checks and confirms 15 November 2026.</p></li>
+          <li><span class="dot"></span><small>Step 04</small><h3>Know what is next</h3><p>The application task and upcoming date are organized together.</p></li>
+        </ol>
+        <p class="result"><svg class="ic"><use href="#i-check"/></svg>Result: You know what the opportunity is, when it closes, and what to do next.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="section" id="faq">
+    <div class="container container--narrow">
+      <header class="head head--center">
+        <p class="eyebrow">The useful details</p>
+        <h2>Questions before you get started?</h2>
+        <p class="sub">A few straight answers about what Nudge can—and can't—do.</p>
+      </header>
+      <div class="faq">
+        <details open><summary>What is Nudge?</summary><p>Nudge is an AI-powered assistant that turns opportunities, deadlines, and follow-ups into organized items you can act on.</p></details>
+        <details><summary>What can I capture?</summary><p>You can add supported links, posters, screenshots, flyers, or a quick written description of the opportunity.</p></details>
+        <details><summary>How does Nudge identify deadlines?</summary><p>Nudge extracts dates from what you share and asks you to confirm them before they are saved.</p></details>
+        <details><summary>Is Nudge only for internships?</summary><p>No. It also works for jobs, hackathons, scholarships, events, talks, and any opportunity with a date attached.</p></details>
+        <details><summary>How is Nudge different from a job portal?</summary><p>A job portal helps you discover listings. Nudge helps you keep track of and follow through on the ones you find, wherever they came from.</p></details>
+        <details><summary>Will Nudge automatically apply for me?</summary><p>No. Nudge organizes the details and reminds you what to do next. You decide when and how to apply.</p></details>
+        <details><summary>Are reminders supported?</summary><p>Nudge keeps upcoming deadlines, tasks, and events in view so nothing slips by. Reminder options depend on your settings.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta" id="cta">
+    <div class="container cta__inner">
+      <div>
+        <p class="eyebrow eyebrow--light"><svg class="ic"><use href="#i-spark"/></svg>A better way to follow through</p>
+        <h2>Don't just save the opportunity. Follow through.</h2>
+        <p>Bring your scattered links, deadlines, and next steps into one organized space.</p>
+      </div>
+      <div class="cta__btns">
+        <a href="/app" class="btn btn--primary">Get Started with Nudge <svg class="ic"><use href="#i-arrow"/></svg></a>
+        <a href="#how" class="btn btn--outline">Explore How It Works</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container footer__grid">
+    <div>
+      <a href="#top" class="logo logo--light"><span class="logo__mark">N</span>Nudge</a>
+      <p>Your personal opportunity assistant for deadlines, events, and follow-through.</p>
+    </div>
+    <div><h4>Product</h4><a href="#features">Features</a><a href="#how">How It Works</a><a href="#use-cases">Use Cases</a><a href="#faq">FAQ</a></div>
+    <div><h4>Explore</h4><a href="#how">The Nudge approach</a><a href="#compare">Why Nudge</a><a href="#faq">Example workflow</a><a href="/app">Launch App</a></div>
   </div>
-
-  <!-- Global Modal Host -->
-  <div id="modal-container" style="display: none;"></div>
-
-  <!-- Global Toast -->
-  <div id="toast">
-    <span id="toast-icon">🔔</span>
-    <span id="toast-text">Notification message</span>
-  </div>
-
-  <script type="module" src="/app.js"></script>
+  <div class="container footer__base"><span>© 2026 Nudge. Built to help you follow through.</span><span>Captured it. Tracked it. Never missed it.</span></div>
+</footer>
+<script src="/landing.js"></script>
 </body>
 </html>
