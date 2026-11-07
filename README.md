@@ -6,8 +6,8 @@
 ---
 
 ### 🌐 Live Production Deployment
-* **Live Web App:** **[https://nudge-production-4842.up.railway.app/](https://nudge-production-4842.up.railway.app/)**
-* **Health Check & Status:** **[https://nudge-production-4842.up.railway.app/health](https://nudge-production-4842.up.railway.app/health)**
+* **Live Web App:** **[https://nudgeweb.up.railway.app/](https://nudgeweb.up.railway.app/)**
+* **Health Check & Status:** **[https://nudgeweb.up.railway.app/health](https://nudgeweb.up.railway.app/health)**
 * **GitHub Repository:** **[https://github.com/Swasti2004/Nudge](https://github.com/Swasti2004/Nudge)**
 
 ---
@@ -33,7 +33,7 @@ Students face constant cognitive overload: internships, hackathons, scholarships
 ## 🐟 TinyFish Web Agent Integration & Hackathon Contribution
 
 > **TinyFish Web Agent Showcase:** [https://tinyfish.io](https://tinyfish.io)  
-> **Live Deployed Application:** [https://nudge-production-4842.up.railway.app/](https://nudge-production-4842.up.railway.app/)  
+> **Live Deployed Application:** [https://nudgeweb.up.railway.app/](https://nudgeweb.up.railway.app/)  
 > **TinyFish Fetch API:** `POST https://api.fetch.tinyfish.ai` | **TinyFish Search API:** `GET https://api.search.tinyfish.ai`
 
 ### 💡 How TinyFish Uniquely Contributes to Nudge's Solution
@@ -103,7 +103,7 @@ In traditional student productivity apps, pasting a link to an opportunity is vi
    └───────────────┘      └───────────────┘      └───────────────┘
 ```
 
-- **Live URL:** [https://nudge-production-4842.up.railway.app/](https://nudge-production-4842.up.railway.app/)
+- **Live URL:** [https://nudgeweb.up.railway.app/](https://nudgeweb.up.railway.app/)
 - **Backend Runtime:** Node.js (v24 / v22) using native ES modules (`"type": "module"`).
 - **Web Agent:** Official TinyFish Fetch & Search API (`tinyfish.js`).
 - **AI Engine:** Google Gemma 4 (`gemma-4-26b-a4b-it`) via official `@google/genai` SDK with strict JSON schema enforcement and fallback heuristics.
@@ -173,7 +173,7 @@ In traditional student productivity apps, pasting a link to an opportunity is vi
 
 ## 🧪 Testing
 
-Nudge Copilot includes 41 automated tests covering TinyFish Fetch & Search, SSRF validation, prompt injection resistance, deadline monitoring, Gemma 4 AI parsing, date math, duplicate detection, and guest isolation.
+Nudge Copilot includes 43 automated tests covering TinyFish Fetch & Search, SSRF validation, prompt injection resistance, deadline monitoring, Gemma 4 AI parsing, date math, duplicate detection, and guest isolation.
 
 Run all tests:
 ```bash
@@ -196,7 +196,7 @@ npm run test:isolation
 
 The production service is deployed on Railway using persistent volume storage and automated health monitoring:
 
-* **Live Domain:** [https://nudge-production-4842.up.railway.app/](https://nudge-production-4842.up.railway.app/)
+* **Live Domain:** [https://nudgeweb.up.railway.app/](https://nudgeweb.up.railway.app/)
 * **Health Check Path:** `/health` (Configured in `railway.json`)
 * **Persistent Storage Mount:** `/data` (Houses `/data/nudge.db`)
 
