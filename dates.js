@@ -85,8 +85,22 @@ export function addDays(days, baseDateStr = null) {
  */
 export function parseColloquialDate(rawText) {
   if (!rawText) return null;
-  const text = rawText.toLowerCase().trim();
+  let text = rawText.toLowerCase().trim();
   const today = todayIST();
+
+  // Normalize repeated characters and common informal variants
+  text = text
+    .replace(/\bday[sz]+\b/g, 'days')
+    .replace(/\bdayy+s*\b/g, 'days')
+    .replace(/\btomor+o+w*\b/g, 'tomorrow')
+    .replace(/\btonite\b/g, 'tonight');
+
+  // Map word numbers to digits
+  const wordToNum = {
+    one: '1', two: '2', three: '3', four: '4', five: '5',
+    six: '6', seven: '7', eight: '8', nine: '9', ten: '10'
+  };
+  text = text.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\b/g, match => wordToNum[match] || match);
 
   if (/\b(today|tonight)\b/.test(text)) {
     return today;
@@ -98,9 +112,9 @@ export function parseColloquialDate(rawText) {
     return addDays(2, today);
   }
 
-  // in X days / X days from now
-  const inDaysMatch = text.match(/\bin\s+(\d+)\s+days?\b/) || text.match(/(\d+)\s+days?\s+(from\s+now|later)/);
-  if (inDaysMatch) {
+  // in X days / after X days / within X days / X days from now / X days left / in X dayss
+  const inDaysMatch = text.match(/\b(?:in|after|within)?\s*(\d+)\s+days?\b/i) || text.match(/(\d+)\s+days?\s*(?:from\s+now|later|left|away|remaining)?/i);
+  if (inDaysMatch && parseInt(inDaysMatch[1], 10) > 0) {
     return addDays(parseInt(inDaysMatch[1], 10), today);
   }
 

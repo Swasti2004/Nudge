@@ -232,8 +232,10 @@ CRITICAL PRODUCT RULES:
    - If the content comes from user chat text, set "evidence": "text" and "source_type": "chat".
 5. RELATIVE TIME RESOLUTION:
    - Relative colloquial expressions ("tomorrow", "in 4 days", "this Friday", "next week") must be resolved to exact absolute YYYY-MM-DD relative to IST today (${today}).
-6. SEPARATE REMINDERS FROM OFFICIAL DEADLINES:
-   - If user says "Remind me in 4 days to attend EY Hackathon", the intent is "add_task", the title is "Attend EY Hackathon", and the reminder date is in 4 days.
+6. SEPARATE REMINDERS FROM OFFICIAL DEADLINES & HANDLE CASUAL PHRASING / TYPOS:
+   - If user says "Remind me in 4 days to attend EY Hackathon", or conversational phrases with typos like "hacakthon in 3 dayss remind me" or "hackathon in 3 days", the intent is "add_task", the title is "Hackathon" (or "Attend EY Hackathon"), and the reminder date is in 3/4 days.
+   - Be robust to informal student phrasing, typos (e.g. "hacakthon", "intrnship", "dayss"), and reversed word order.
+   - NEVER classify an opportunity, deadline, or reminder request as "irrelevant". Only classify completely unrelated topics (e.g. "recipe for pancakes", "who won the world cup") as "irrelevant".
 7. INTENTS:
    - "save_opportunity": student wants to track an internship, job, hackathon, scholarship, or fellowship.
    - "discover_opportunities": student is looking to find, discover, or search for upcoming opportunities (e.g. "find hackathons", "search AI internships").
@@ -609,15 +611,15 @@ export function parseHeuristically({ text = '', ocrText = '', pageText = '', pag
     };
   }
 
-  // 5. Detect Category
+  // 5. Detect Category (with typo tolerance for common student misspellings)
   let category = 'other';
-  if (/hackathon|codefest|hack\b|ideathon/i.test(lowerCombined)) {
+  if (/\bh[ack]+th?on\b|codefest|hack\b|ideathon/i.test(lowerCombined)) {
     category = 'hackathon';
-  } else if (/intern|internship|co-op|summer analyst|campus hiring/i.test(lowerCombined)) {
+  } else if (/int[a-z]*nship|intern|co-op|summer analyst|campus hiring/i.test(lowerCombined)) {
     category = 'internship';
-  } else if (/scholarship|fellowship|grant|bursary/i.test(lowerCombined)) {
+  } else if (/sch?ol[a-z]*ship|fellowship|grant|bursary/i.test(lowerCombined)) {
     category = 'scholarship';
-  } else if (/assignment|homework|essay|lab report|quiz|project submission/i.test(lowerCombined)) {
+  } else if (/as[a-z]*gnment|homework|essay|lab report|quiz|project submission/i.test(lowerCombined)) {
     category = 'assignment';
   } else if (/interview|webinar|workshop|meetup|talk|session/i.test(lowerCombined)) {
     category = 'event';
@@ -711,8 +713,8 @@ export function parseHeuristically({ text = '', ocrText = '', pageText = '', pag
   }
 
   // 7c. User text priority
+  const isReminderPrompt = /\bremind(\s+me)?\b/i.test(lowerText) || lowerText.startsWith('todo:') || lowerText.startsWith('task:');
   if (!deadline && text) {
-    const isReminderPrompt = /\bremind me (in\s+\d+\s+days?|tomorrow|next\s+\w+)/i.test(lowerText);
     const textDate = extractDeadlineFromContext(text);
     if (textDate) {
       if (isReminderPrompt) {
@@ -745,11 +747,20 @@ export function parseHeuristically({ text = '', ocrText = '', pageText = '', pag
 
   // 9. Extract Title
   let title = 'Opportunity';
-  const isReminderPrompt = lowerText.startsWith('remind me');
   if (category === 'assignment' || isReminderPrompt || lowerText.startsWith('todo:') || lowerText.startsWith('task:')) {
-    let clean = text.replace(/^(remind me to|remind me in \d+ days to|remind me|todo:|task:)\s*/i, '').trim();
-    clean = clean.replace(/\b(next\s+\w+|tomorrow|today|this\s+\w+|in\s+\d+\s+days?)\b/gi, '').trim();
-    title = clean.charAt(0).toUpperCase() + clean.slice(1) || 'Class Assignment';
+    let clean = text
+      .replace(/^(remind me to|remind me in \d+ days to|remind me|todo:|task:)\s*/i, '')
+      .replace(/\bremind(\s+me)?(\s+to|\s+about)?\b/gi, '')
+      .replace(/\b(next\s+\w+|tomorrow|today|this\s+\w+|in\s+\d+\s+day[sz]*|after\s+\d+\s+day[sz]*|within\s+\d+\s+day[sz]*|\d+\s+day[sz]*)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (clean) {
+      // Fix common typos in clean title
+      clean = clean.replace(/\bh[ack]+th?on\b/gi, 'Hackathon');
+      title = clean.charAt(0).toUpperCase() + clean.slice(1);
+    } else {
+      title = category === 'hackathon' ? 'Hackathon' : (category === 'internship' ? 'Internship' : 'Task Reminder');
+    }
   } else if (category === 'event' || /interview|webinar/i.test(lowerText)) {
     title = (org ? `${org} ` : '') + (text.match(/(interview|webinar|workshop|meetup|talk)/i)?.[0] || 'Event');
     title = title.charAt(0).toUpperCase() + title.slice(1);
@@ -773,9 +784,9 @@ export function parseHeuristically({ text = '', ocrText = '', pageText = '', pag
   const hasExplicitOrg = Boolean(org);
   const isAssignmentOrTask = category === 'assignment' || isReminderPrompt || lowerText.startsWith('todo:') || lowerText.startsWith('task:') || /\b(submit|assignment|homework|essay|finish|complete|due|deadline|task|todo)\b/i.test(lowerText);
   const isEvent = category === 'event' || /\b(interview|webinar|workshop|meetup|talk|session)\b/i.test(lowerText);
-  const isOpportunity = ['internship', 'hackathon', 'scholarship', 'form'].includes(category) || /\b(intern|internship|hackathon|scholarship|fellowship|job|hiring|careers?|co-op|swe|developer|application|apply|contest|fellow)\b/i.test(lowerCombined);
+  const isOpportunity = ['internship', 'hackathon', 'scholarship', 'form'].includes(category) || /\b(intern|internship|hackathon|hacakthon|hackthon|scholarship|fellowship|job|hiring|careers?|co-op|swe|developer|application|apply|contest|fellow)\b/i.test(lowerCombined);
 
-  const isRelevant = isImageOrPagePresent || hasExtractedDate || hasExplicitOrg || isAssignmentOrTask || isEvent || isOpportunity;
+  const isRelevant = isImageOrPagePresent || hasExtractedDate || hasExplicitOrg || isAssignmentOrTask || isEvent || isOpportunity || isReminderPrompt;
 
   if (!isRelevant) {
     return {

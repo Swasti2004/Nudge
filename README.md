@@ -30,27 +30,46 @@ Students face constant cognitive overload: internships, hackathons, scholarships
 
 ---
 
-## 🐟 TinyFish Web Agent Integration
+## 🐟 TinyFish Web Agent Integration & Hackathon Contribution
 
-Nudge Copilot integrates **TinyFish** across three critical workflows:
+> **TinyFish Web Agent Showcase:** [https://tinyfish.io](https://tinyfish.io)  
+> **Live Deployed Application:** [https://nudge-production-4842.up.railway.app/](https://nudge-production-4842.up.railway.app/)  
+> **TinyFish Fetch API:** `POST https://api.fetch.tinyfish.ai` | **TinyFish Search API:** `GET https://api.search.tinyfish.ai`
 
-### 1. TinyFish Fetch + Gemma 4 Pipeline
-* **Endpoint:** `POST https://api.fetch.tinyfish.ai`
-* **Real Browser Rendering:** Modern student portals (Devfolio, Unstop, Greenhouse, Lever, Luma) rely heavily on client-side JavaScript rendering. TinyFish executes full browser rendering to extract dynamically loaded deadline schedules, eligibility criteria, and application links.
-* **Security & Prompt Injection Protection:** URLs undergo strict pre-flight SSRF validation (DNS verification against private IPv4 and IPv6 ranges). Webpage text is stripped of script tags, style sheets, and prompt-injection overrides (`ignore previous instructions`, `system prompt`) before reaching Gemma 4.
-* **Graceful Fallback:** If `TINYFISH_API_KEY` is not present, times out, or encounters network errors, the engine falls back safely to local SSRF-safe fetching without crashing the user's flow.
-* **Registration Deadline vs Event Date Separation:** Accurately distinguishes application/registration cutoffs from the dates the competition/event occurs.
+### 💡 How TinyFish Uniquely Contributes to Nudge's Solution
 
-### 2. Live Deadline Monitoring
-* **Background Checks:** Monitored opportunities with URLs are automatically checked every 30 minutes in the background, or on-demand via the **"🐟 Check Live Page"** button.
-* **Proactive Alerts:** If an organization extends or advances a registration deadline, Nudge notifies the student via Web Push and a prominent alert in their active conversation and Opportunities tab.
-* **Non-Negotiable Invariant:** Confirmed deadlines are **NEVER silently overwritten**. The student is presented with clear options: `[Update to new date]` or `[Keep saved date]`.
+In traditional student productivity apps, pasting a link to an opportunity is virtually useless because modern application portals (Devfolio, Unstop, Greenhouse, Lever, Luma, Devpost) are **heavily client-side rendered Single-Page Applications (SPAs)**. Standard HTTP clients only receive empty container tags (`<div id="root"></div>`), completely missing dynamic application deadlines, eligibility criteria, and application links.
 
-### 3. Opportunity Discovery
-* **Endpoint:** `GET https://api.search.tinyfish.ai?query=...`
-* **Search Engine Discovery:** Students can type naturally in chat (*"Find upcoming AI hackathons"*, *"Search summer software internships"*) or click the **"🐟 Discover with TinyFish"** modal in the Opportunities view.
-* **Structured by Gemma 4:** Search snippets and URLs are structured into title, organization, category, deadline, and eligibility.
-* **Confirmation-First Saving:** Discovered opportunities are presented for review with 1-click confirmation before anything is saved to the tracker.
+**TinyFish transforms Nudge from a passive note-taker into an autonomous, proactive opportunity copilot across three foundational pillars:**
+
+```
+   ┌────────────────────────────────────────────────────────────────────────┐
+   │                  TinyFish Web Agent Contribution                       │
+   └───────────────────────────────────┬────────────────────────────────────┘
+                                       │
+        ┌──────────────────────────────┼──────────────────────────────┐
+        ▼                              ▼                              ▼
+ 1. Real Browser Fetch         2. Autonomous Monitor          3. Live Discovery
+ ─────────────────────         ─────────────────────          ──────────────────
+ • Renders dynamic SPAs        • 30-min background crawl      • Live query search
+ • Extracts hydrated dates     • Detects deadline changes     • Discovers new opps
+ • Separates reg vs event      • Alert without overwrite      • 1-click tracking
+```
+
+#### 1. Real Browser Rendering & Information Extraction (TinyFish Fetch API)
+* **Solving the CSR Barrier:** TinyFish executes a real browser engine that executes JavaScript, waits for dynamic DOM hydration, and extracts clean, injection-sanitized markdown from complex portals.
+* **Separation of Registration Deadlines vs. Event Dates:** For hackathons and conferences, TinyFish extracts both the registration cutoff and the actual event dates. The AI model assigns the registration deadline to the primary tracking schedule, ensuring students don't confuse when the hackathon happens with when applications close.
+* **Intelligent Date Constraint Validation:** When an official closing date is extracted by TinyFish or an uploaded flyer, the UI enforces strict calendar validation (`custom_deadline <= official_closing_date`). Students can choose an earlier personal preparation deadline, but are prevented from setting a reminder after the opportunity has officially closed.
+* **Security & Prompt Injection Resistance:** Built-in pre-flight SSRF validation checks domains against private IPv4/IPv6 address spaces. Raw text is sanitized before reaching the reasoning model.
+
+#### 2. Autonomous Deadline Vigilance & Change Detection (TinyFish Monitoring)
+* **Continuous Background Re-crawling:** Student deadlines change constantly—organizers extend hackathon submissions by 48 hours or close job applications early due to high volume. Every 30 minutes, a `node-cron` background worker uses TinyFish to re-crawl saved opportunity pages.
+* **Proactive In-App & Web Push Alerts:** If a date change is detected, Nudge notifies the student instantly via Web Push and banners in the active conversation and Opportunities view.
+* **Immutable Confirmed Dates:** To preserve user trust, confirmed deadlines are **never silently overwritten**. The student is always given explicit control: `[Update to new date]` or `[Keep saved date]`.
+
+#### 3. Live Opportunity Discovery (TinyFish Search API)
+* **Natural Conversational Search:** Students can type naturally (*"Find upcoming AI hackathons"* or *"Search summer 2026 software internships"*) or open the **"🐟 Discover with TinyFish"** modal.
+* **Real-Time Web Intelligence:** TinyFish Search queries the live web for active competitions and scholarships. Results are structured by the AI reasoning model and presented with 1-click tracking and verification.
 
 ---
 

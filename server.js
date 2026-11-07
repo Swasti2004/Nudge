@@ -583,6 +583,7 @@ app.post('/api/chat', rateLimit(30, 60000), async (req, res) => {
           category: item.category || 'internship',
           deadline: suggestedDate,
           suggested_deadline: suggestedDate,
+          official_deadline: hasExplicitDate ? item.deadline : null,
           has_explicit_date: hasExplicitDate,
           event_date: item.event_date || null,
           eligibility: item.eligibility || null,
@@ -629,6 +630,58 @@ app.post('/api/chat', rateLimit(30, 60000), async (req, res) => {
         actions,
         state: getFullState(req.guestId)
       });
+    }
+
+    // Safety Net Rescue: If no items found or AI misclassified, but message contains opportunity or reminder signals, parse heuristically
+    if (items.length === 0 && text) {
+      const rescue = parseHeuristically({ text, history });
+      if (rescue && rescue.items && rescue.items.length > 0 && rescue.intent !== 'irrelevant') {
+        const item = rescue.items[0];
+        if (rescue.intent === 'add_task') {
+          const taskId = insertTask(item.title, item.deadline || item.reminder_at, req.guestId);
+          if (item.deadline || item.reminder_at) {
+            scheduleTaskReminders(taskId, item.deadline || item.reminder_at, 1, req.guestId);
+          }
+          const reply = `✅ Added task **${item.title}**! ${item.deadline ? `Due on **${formatDateIST(item.deadline)}** (${countdownText(item.deadline)}).` : ''} We will nudge you before it's due! 🚀`;
+          addMessage(conversation_id, 'bot', reply, null, null, req.guestId);
+          return res.json({
+            role: 'bot',
+            text: reply,
+            actions: null,
+            state: getFullState(req.guestId)
+          });
+        } else if (rescue.intent === 'save_opportunity') {
+          const suggestedDate = item.deadline || addDays(3);
+          const countdown = countdownText(suggestedDate);
+          const actions = {
+            type: 'deadline_card',
+            item: {
+              title: item.title,
+              org: item.org,
+              category: item.category || 'internship',
+              deadline: suggestedDate,
+              suggested_deadline: suggestedDate,
+              official_deadline: item.deadline || null,
+              has_explicit_date: !!item.deadline,
+              event_date: item.event_date || null,
+              eligibility: item.eligibility || null,
+              application_url: item.application_url || item.url || null,
+              evidence: 'text',
+              location: item.location,
+              url: item.url
+            }
+          };
+          const reply = `🎯 I captured **${item.title}**${item.org ? ` from **${item.org}**` : ''}!\n` +
+            `📅 **Deadline:** **${formatDateIST(suggestedDate)}** *(${countdown})*.\n\nPlease confirm with 1-click or choose a custom date below:`;
+          addMessage(conversation_id, 'bot', reply, actions, null, req.guestId);
+          return res.json({
+            role: 'bot',
+            text: reply,
+            actions,
+            state: getFullState(req.guestId)
+          });
+        }
+      }
     }
 
     // Fallback: Message does not match the purpose of this project
@@ -716,6 +769,20 @@ app.post('/api/action', (req, res) => {
     }
 
     else if (action === 'set_manual') {
+      const today = todayIST();
+      if (payload.deadline < today) {
+        return res.status(400).json({
+          error: `Selected deadline (${formatDateIST(payload.deadline)}) is in the past. Please select today or a future date.`,
+          code: 'PAST_DEADLINE'
+        });
+      }
+      if (payload.official_deadline && payload.deadline > payload.official_deadline) {
+        return res.status(400).json({
+          error: `Selected deadline (${formatDateIST(payload.deadline)}) cannot be after the official closing date (${formatDateIST(payload.official_deadline)}). You can only choose a date on or before the deadline.`,
+          code: 'INVALID_CUSTOM_DEADLINE'
+        });
+      }
+
       const oppId = insertOpportunity({
         title: payload.title,
         org: payload.org || null,
@@ -730,7 +797,8 @@ app.post('/api/action', (req, res) => {
 
       scheduleOppReminders(oppId, payload.deadline, 3, req.guestId);
       updatedItem = getOpportunityById(oppId, req.guestId);
-      botReply = `✅ Saved **${payload.title}** with custom deadline **${formatDateIST(payload.deadline)}** (${countdownText(payload.deadline)}). We will nudge you before it's due! 🚀`;
+      const isAhead = payload.official_deadline && payload.deadline < payload.official_deadline;
+      botReply = `✅ Saved **${payload.title}**! Custom preparation deadline set for **${formatDateIST(payload.deadline)}** (${countdownText(payload.deadline)})${isAhead ? ` ahead of the official closing date (**${formatDateIST(payload.official_deadline)}**)` : ''}. We will nudge you before it's due! 🚀`;
     }
 
     else if (action === 'track_discovered') {
@@ -748,6 +816,7 @@ app.post('/api/action', (req, res) => {
           category: item.category || 'internship',
           deadline: suggestedDate,
           suggested_deadline: suggestedDate,
+          official_deadline: item.deadline || null,
           has_explicit_date: hasExplicitDate,
           evidence: 'tinyfish',
           location: item.location || null,

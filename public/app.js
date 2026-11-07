@@ -580,12 +580,14 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
     `;
   }
 
+  const hasExplicitDate = item.has_explicit_date !== undefined ? item.has_explicit_date : true;
+  const officialDeadline = item.official_deadline || (hasExplicitDate ? suggested : null);
+
   // Month and Year for mini calendar
   const today = todayIST();
   const [sY, sM] = suggested.split('-').map(Number);
-  const miniCalHtml = buildMiniCalendar(sY, sM - 1, suggested);
+  const miniCalHtml = buildMiniCalendar(sY, sM - 1, suggested, officialDeadline);
 
-  const hasExplicitDate = item.has_explicit_date !== undefined ? item.has_explicit_date : true;
   let opt1Header = 'Option 1: Extracted Deadline';
   let opt1BtnText = `✓ Accept Extracted Deadline (${formatDate(suggested)})`;
 
@@ -611,6 +613,26 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
     ${item.eligibility ? `<div style="font-size:0.8rem; color:var(--text-secondary); margin-top:2px;">🎓 Eligibility: <span>${escapeHtml(item.eligibility)}</span></div>` : ''}
     ${item.application_url ? `<div style="font-size:0.8rem; margin-top:2px;"><a href="${escapeHtml(item.application_url)}" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:none;">🔗 Official Portal Link</a></div>` : ''}
   `;
+
+  // Compute preset chips filtered by official deadline constraint
+  const allPresets = [
+    { label: 'Tomorrow', date: addDays(1) },
+    { label: '+3 Days', date: addDays(3) },
+    { label: '+7 Days', date: addDays(7) },
+    { label: '+14 Days', date: addDays(14) }
+  ];
+  let presetChipsHtml = '';
+  allPresets.forEach(p => {
+    if (!officialDeadline || p.date <= officialDeadline) {
+      presetChipsHtml += `<button class="preset-chip" data-preset="${p.date}">${p.label}</button>`;
+    }
+  });
+  if (officialDeadline) {
+    presetChipsHtml += `<button class="preset-chip is-official" data-preset="${officialDeadline}">🎯 On Deadline (${formatDate(officialDeadline)})</button>`;
+  }
+
+  const minAttr = `min="${today}"`;
+  const maxAttr = officialDeadline ? `max="${officialDeadline}"` : '';
 
   return `
     <div class="action-card deadline-card" data-msg-id="${msgId}">
@@ -652,10 +674,7 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
 
           <!-- Quick preset chips -->
           <div class="preset-chips-row">
-            <button class="preset-chip" data-preset="${addDays(1)}">Tomorrow</button>
-            <button class="preset-chip" data-preset="${addDays(3)}">+3 Days</button>
-            <button class="preset-chip" data-preset="${addDays(7)}">+7 Days</button>
-            <button class="preset-chip" data-preset="${addDays(14)}">+14 Days</button>
+            ${presetChipsHtml}
           </div>
 
           <!-- Inline Mini-Calendar Widget -->
@@ -665,7 +684,7 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
 
           <!-- Manual date field with browser icon hidden via CSS -->
           <div class="custom-date-row">
-            <input type="date" class="input-control no-browser-icon" id="manual-date-${msgId}" value="${suggested}">
+            <input type="date" class="input-control no-browser-icon" id="manual-date-${msgId}" value="${suggested}" ${minAttr} ${maxAttr}>
             <button class="btn btn-secondary btn-sm" style="white-space:nowrap;"
               data-act="set_manual"
               data-msg-target="${msgId}"
@@ -673,10 +692,13 @@ function renderDeadlineCard(item, msgId, isConfirmed = false) {
               data-org="${escapeHtml(item.org || '')}"
               data-cat="${item.category || 'other'}"
               data-loc="${escapeHtml(item.location || '')}"
-              data-url="${escapeHtml(item.url || '')}">
+              data-url="${escapeHtml(item.url || item.application_url || '')}"
+              data-eligibility="${escapeHtml(item.eligibility || '')}"
+              data-official-deadline="${officialDeadline || ''}">
               Confirm Date
             </button>
           </div>
+          ${officialDeadline ? `<div class="deadline-constraint-hint" style="font-size:0.75rem; color:var(--text-secondary); margin-top:5px; line-height:1.3;">⚠️ <strong>Deadline Rule:</strong> Custom date must be on or before the official closing date (<strong>${formatDate(officialDeadline)}</strong>).</div>` : ''}
         </div>
       </div>
     </div>
@@ -784,7 +806,7 @@ function renderDiscoveryResults(actionsObj, msgId) {
   `;
 }
 
-function buildMiniCalendar(year, month, selectedDateStr) {
+function buildMiniCalendar(year, month, selectedDateStr, maxDateStr = null) {
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -801,10 +823,12 @@ function buildMiniCalendar(year, month, selectedDateStr) {
     const isToday = curDateStr === today;
     const isSelected = curDateStr === selectedDateStr;
     const isPast = curDateStr < today;
+    const isAfterMax = maxDateStr ? curDateStr > maxDateStr : false;
+    const isDisabled = isPast || isAfterMax;
 
     daysHtml += `
-      <button type="button" class="mini-cal-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${isPast ? 'disabled' : ''}"
-        data-cal-date="${curDateStr}">
+      <button type="button" class="mini-cal-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}"
+        data-cal-date="${curDateStr}" ${isDisabled ? 'disabled' : ''} title="${isAfterMax ? 'Cannot exceed official deadline' : curDateStr}">
         ${d}
       </button>
     `;
@@ -812,9 +836,9 @@ function buildMiniCalendar(year, month, selectedDateStr) {
 
   return `
     <div class="mini-cal-header">
-      <button type="button" class="mini-cal-nav-btn" data-mini-nav="-1" data-year="${year}" data-month="${month}">◀</button>
+      <button type="button" class="mini-cal-nav-btn" data-mini-nav="-1" data-year="${year}" data-month="${month}" data-max="${maxDateStr || ''}">◀</button>
       <span class="mini-cal-title">${months[month]} ${year}</span>
-      <button type="button" class="mini-cal-nav-btn" data-mini-nav="1" data-year="${year}" data-month="${month}">▶</button>
+      <button type="button" class="mini-cal-nav-btn" data-mini-nav="1" data-year="${year}" data-month="${month}" data-max="${maxDateStr || ''}">▶</button>
     </div>
     <div class="mini-cal-days-header">
       <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
@@ -1178,10 +1202,16 @@ function setupChatListeners() {
         // Check mini calendar day click
         const dayBtn = e.target.closest('[data-cal-date]');
         if (dayBtn) {
+          if (dayBtn.disabled || dayBtn.classList.contains('disabled')) return;
           const date = dayBtn.dataset.calDate;
           const card = dayBtn.closest('.action-card');
           if (card) {
             const input = card.querySelector('input[type="date"]');
+            const maxVal = input ? input.max : null;
+            if (maxVal && date > maxVal) {
+              showToast(`Date cannot be after the official deadline (${formatDate(maxVal)})`, '⚠️');
+              return;
+            }
             if (input) input.value = date;
             card.querySelectorAll('.mini-cal-day').forEach(b => b.classList.remove('selected'));
             dayBtn.classList.add('selected');
@@ -1200,8 +1230,9 @@ function setupChatListeners() {
           const card = navBtn.closest('.action-card');
           const input = card?.querySelector('input[type="date"]');
           const curVal = input ? input.value : todayIST();
+          const maxVal = navBtn.dataset.max || (input ? input.max : null);
           if (calContainer) {
-            calContainer.innerHTML = buildMiniCalendar(y, m, curVal);
+            calContainer.innerHTML = buildMiniCalendar(y, m, curVal, maxVal);
           }
         }
 
@@ -1212,13 +1243,18 @@ function setupChatListeners() {
           const card = presetBtn.closest('.action-card');
           if (card) {
             const input = card.querySelector('input[type="date"]');
+            const maxVal = input ? input.max : null;
+            if (maxVal && date > maxVal) {
+              showToast(`Date cannot be after the official deadline (${formatDate(maxVal)})`, '⚠️');
+              return;
+            }
             if (input) input.value = date;
             card.querySelectorAll('.preset-chip').forEach(c => c.classList.remove('selected'));
             presetBtn.classList.add('selected');
             const cal = card.querySelector('.mini-cal-container');
             if (cal) {
               const [y, m] = date.split('-').map(Number);
-              cal.innerHTML = buildMiniCalendar(y, m - 1, date);
+              cal.innerHTML = buildMiniCalendar(y, m - 1, date, maxVal);
             }
           }
         }
@@ -1246,12 +1282,30 @@ function setupChatListeners() {
         const targetId = target.dataset.msgTarget;
         const dateInput = document.getElementById(`manual-date-${targetId}`);
         const customDate = dateInput ? dateInput.value : todayIST();
+        const officialDeadline = target.dataset.officialDeadline;
+
+        if (!customDate) {
+          showToast('Please select a valid date', '⚠️');
+          return;
+        }
+
+        if (customDate < todayIST()) {
+          showToast('Deadline cannot be in the past. Please choose today or a future date.', '⚠️');
+          return;
+        }
+
+        if (officialDeadline && customDate > officialDeadline) {
+          showToast(`Custom deadline cannot be after the official deadline (${formatDate(officialDeadline)}). You can only choose a date on or before the closing date.`, '⚠️');
+          if (dateInput) dateInput.value = officialDeadline;
+          return;
+        }
 
         const payload = {
           title: target.dataset.title,
           org: target.dataset.org,
           category: target.dataset.cat,
           deadline: customDate,
+          official_deadline: officialDeadline || null,
           location: target.dataset.loc,
           url: target.dataset.url,
           eligibility: target.dataset.eligibility || null

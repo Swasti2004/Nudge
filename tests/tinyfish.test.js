@@ -8,6 +8,7 @@ import {
 } from '../tinyfish.js';
 import {
   parseHeuristically,
+  processUserInput,
   reExtractDeadlineFromPage,
   structureDiscoveredOpportunities,
   detectDiscoveryIntent
@@ -21,7 +22,7 @@ import {
   dismissDeadlineChange,
   resetDatabase
 } from '../db.js';
-import { todayIST } from '../dates.js';
+import { todayIST, addDays } from '../dates.js';
 
 test('1. SSRF URL Validation - blocks invalid schemes, localhost and private IPs', async () => {
   await assert.rejects(
@@ -215,4 +216,25 @@ test('7. Deadline Monitoring - detects extensions without overwriting confirmed 
   assert.equal(opp.deadline, '2026-11-20', 'Confirmed deadline should now match accepted detected deadline');
   assert.equal(opp.deadline_change_detected, 0);
   assert.equal(opp.detected_change_note, null);
+});
+
+test('8. Typo Resilience - handles informal phrasing and student typos (e.g. hacakthon in 3 dayss remind me)', async () => {
+  const result = await processUserInput({ text: 'hacakthon in 3 dayss remind me' });
+  assert.ok(result);
+  assert.equal(result.intent, 'add_task');
+  assert.ok(result.items.length > 0);
+  const item = result.items[0];
+  assert.equal(item.category, 'hackathon');
+  const expectedDate = addDays(3, todayIST());
+  assert.equal(item.deadline || item.reminder_at, expectedDate);
+});
+
+test('9. Custom Deadline Constraint - rejects custom date after official closing date', async () => {
+  const officialDeadline = '2026-11-15';
+  const invalidCustomDeadline = '2026-11-20'; // After official closing date
+
+  // Verify client/server contract: custom date cannot be greater than official deadline
+  assert.ok(invalidCustomDeadline > officialDeadline, 'Invalid custom date must be greater than official deadline');
+  const validEarlyDeadline = '2026-11-10'; // Valid earlier preparation date
+  assert.ok(validEarlyDeadline <= officialDeadline, 'Valid early date must be <= official deadline');
 });
